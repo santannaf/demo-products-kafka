@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>DemoProducts.Api</RootNamespace>
+
+    <PublishAot>true</PublishAot>
+    <!-- Already implied by PublishAot; stated so the consequence is visible to the reader. -->
+    <TrimMode>full</TrimMode>
+    <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+
+    <!-- Names the offending METHOD in the publish log instead of collapsing to one IL2104 per assembly. -->
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+
+    <!--
+      ADR 0001, option A. TreatWarningsAsErrors=true (Directory.Build.props) propagates into ILC, which
+      then reports 139 trim/AOT diagnostics as ERRORS and stops the publish. Every one of them comes from
+      a third-party assembly whose newest asset predates net10.0 - Newtonsoft.Json (via Apache.Avro),
+      Confluent.SchemaRegistry, Confluent.Kafka - and NONE from DemoProducts.*; no pin resolves them at
+      these versions.
+
+      The demotion is scoped as narrowly as the tooling allows: this property, this project. It does NOT
+      touch the C# compiler warnings, which stay errors, and it adds no <NoWarn> and no
+      [UnconditionalSuppressMessage] - the diagnostics are still printed, counted and reviewable.
+
+      It lives here rather than on the publish command line so that the Dockerfile, the README command
+      and CI all get the same result from one source of truth. ADR 0001 carries the per-family
+      reachability argument and the residual risk.
+    -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
+
+    <!-- A type missing from the JSON context throws instead of quietly reflecting - on the CLR too. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DemoProducts.Application\DemoProducts.Application.csproj" />
+    <ProjectReference Include="..\DemoProducts.Infrastructure\DemoProducts.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Serilog.AspNetCore" />
+  </ItemGroup>
+
+</Project>

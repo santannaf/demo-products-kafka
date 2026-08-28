@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DemoProducts.Consumer</RootNamespace>
+
+    <!--
+      No PublishAot here, deliberately. The Avro DESERIALIZE path (Avro.SpecificDefaultReader ->
+      Avro.ObjectCreator) resolves record types BY NAME through Activator, which ILC cannot analyse
+      statically. See docs/adr/0001-native-aot.md. IsAotCompatible still applies from
+      Directory.Build.props, so the source-level analysers keep running over this project.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DemoProducts.Application\DemoProducts.Application.csproj" />
+    <ProjectReference Include="..\DemoProducts.Infrastructure\DemoProducts.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+  </ItemGroup>
+
+  <!-- Microsoft.NET.Sdk does not copy appsettings.json the way the Web SDK does. -->
+  <ItemGroup>
+    <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

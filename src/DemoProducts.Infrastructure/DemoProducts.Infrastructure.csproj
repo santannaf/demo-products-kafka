@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>DemoProducts.Infrastructure</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DemoProducts.Application\DemoProducts.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Apache.Avro" />
+    <PackageReference Include="Confluent.Kafka" />
+    <PackageReference Include="Confluent.SchemaRegistry" />
+    <PackageReference Include="Confluent.SchemaRegistry.Serdes.Avro" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Enrichers.Thread" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+  </ItemGroup>
+
+  <!-- The .avsc is the canonical schema; shipped alongside the code so it is reviewable next to it. -->
+  <ItemGroup>
+    <None Include="Messaging\Kafka\Avro\Schemas\product-created.avsc" />
+  </ItemGroup>
+
+  <Import Project="Messaging\Kafka\Avro\Avro.targets" />
+
+</Project>

@@ -1,0 +1,33 @@
+<Project>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!--
+    A project is a test project when its name ENDS WITH "Tests". Detected by name, not by
+    $(IsTestProject): the test SDK sets that property in targets imported AFTER this file.
+  -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('Tests'))">
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true'">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!--
+      The configuration binder generator runs where the binding CALL sites are, and those live in
+      Infrastructure (KafkaOptions, SerilogOptions) as well as in the Api. Setting it solution-wide is
+      what keeps every bind generated instead of reflective.
+    -->
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+  </PropertyGroup>
+
+</Project>

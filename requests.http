@@ -1,0 +1,24 @@
+@api = http://localhost:5080
+@schemaRegistry = http://localhost:8081
+
+### Create a product (happy path) -> 201 Created
+POST {{api}}/products
+Content-Type: application/json
+
+{
+  "name": "Notebook"
+}
+
+### Blank name -> 400 ValidationProblem (exercises the error wire types with reflection off)
+POST {{api}}/products
+Content-Type: application/json
+
+{
+  "name": "   "
+}
+
+### The subject registered by the first publish
+GET {{schemaRegistry}}/subjects/product-created-value/versions/latest
+
+### All registered subjects
+GET {{schemaRegistry}}/subjects

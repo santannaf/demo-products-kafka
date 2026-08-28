@@ -1,0 +1,38 @@
+# A reproducible home for the AOT publish gate: pinned SDK, pinned toolchain, no host setup.
+#     docker build -f Dockerfile.api -t demo-products-api .
+#
+# This build SUCCEEDS. It prints 139 ILC trim/AOT warnings from third-party assemblies
+# (Newtonsoft.Json via Apache.Avro, Confluent.SchemaRegistry, Confluent.Kafka) and 0 from
+# DemoProducts.*; docs/adr/0001-native-aot.md carries the per-family reachability argument.
+# The publish completes because DemoProducts.Api.csproj sets IlcTreatWarningsAsErrors=false -
+# deliberately NOT repeated on the command line below, so the csproj stays the single source of
+# truth for the bare-metal publish, this image and CI alike.
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends clang zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /source
+COPY Directory.Build.props Directory.Packages.props DemoProducts.slnx ./
+COPY src/ ./src/
+
+RUN dotnet restore src/DemoProducts.Api/DemoProducts.Api.csproj --runtime linux-x64
+RUN dotnet publish src/DemoProducts.Api/DemoProducts.Api.csproj \
+      --configuration Release \
+      --runtime linux-x64 \
+      --self-contained true \
+      -p:PublishAot=true \
+      --output /app
+
+# runtime-deps, not aspnet: a self-contained native binary never loads the shared framework.
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
+# InvariantGlobalization=false needs ICU (already present on the Debian tags) and tzdata.
+RUN apt-get update \
+ && apt-get install --yes --no-install-recommends tzdata ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=build /app ./
+EXPOSE 5080
+ENTRYPOINT ["./DemoProducts.Api"]

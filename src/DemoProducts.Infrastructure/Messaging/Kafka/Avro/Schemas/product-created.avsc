@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "ProductCreatedAvro",
+  "namespace": "DemoProducts.Infrastructure.Messaging.Kafka.Avro.Generated",
+  "fields": [
+    { "name": "EventId", "type": "string" },
+    { "name": "ProductId", "type": "string" },
+    { "name": "Name", "type": "string" },
+    { "name": "OccurredAtUtc", "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}

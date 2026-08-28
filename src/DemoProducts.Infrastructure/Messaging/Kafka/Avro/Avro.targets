@@ -1,0 +1,22 @@
+<Project>
+
+  <!--
+    Opt-in regeneration of Generated/ProductCreatedAvro.cs from the canonical .avsc.
+
+    OFF by default (GenerateAvro is unset) so an ordinary `dotnet build` never needs the avrogen tool
+    and never reaches the network. To regenerate:
+
+        dotnet tool restore
+        dotnet build -p:GenerateAvro=true
+  -->
+  <Target Name="GenerateAvroClasses"
+          BeforeTargets="BeforeCompile"
+          Condition="'$(GenerateAvro)' == 'true'">
+
+    <Message Importance="high" Text="Regenerating Avro classes from product-created.avsc" />
+
+    <Exec WorkingDirectory="$(MSBuildThisFileDirectory)"
+          Command="dotnet avrogen -s &quot;Schemas/product-created.avsc&quot; &quot;Generated&quot; --skip-directories" />
+  </Target>
+
+</Project>
