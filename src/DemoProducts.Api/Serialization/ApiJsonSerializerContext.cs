@@ -13,6 +13,9 @@ namespace DemoProducts.Api.Serialization;
 /// </summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    // HttpValidationProblemDetails.Errors is keyed by field name. The domain supplies "Name"; this is
+    // what keeps the wire contract on "name", as it was when the endpoint hardcoded the key.
+    DictionaryKeyPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = false)]
 [JsonSerializable(typeof(CreateProductRequest))]
 [JsonSerializable(typeof(CreateProductResponse))]

@@ -17,15 +17,8 @@ internal sealed partial class GlobalExceptionHandler(
         ArgumentNullException.ThrowIfNull(httpContext);
         ArgumentNullException.ThrowIfNull(exception);
 
-        var (statusCode, title) = exception switch
-        {
-            InvalidProductNameException => (StatusCodes.Status400BadRequest, "Invalid product."),
-
-            // The upstream broker or Schema Registry failed, not the caller.
-            EventPublishFailedException => (StatusCodes.Status502BadGateway, "Failed to publish the ProductCreated event."),
-
-            _ => (StatusCodes.Status500InternalServerError, "Unexpected error."),
-        };
+        var problemDetails = Describe(exception);
+        var statusCode = problemDetails.Status ?? StatusCodes.Status500InternalServerError;
 
         if (statusCode == StatusCodes.Status500InternalServerError)
         {
@@ -41,16 +34,39 @@ internal sealed partial class GlobalExceptionHandler(
         return await problemDetailsService.TryWriteAsync(new ProblemDetailsContext
         {
             HttpContext = httpContext,
-            ProblemDetails = new ProblemDetails
-            {
-                Status = statusCode,
-                Title = title,
-
-                // An unmapped exception message may carry internals, so it is logged and not returned.
-                Detail = statusCode == StatusCodes.Status500InternalServerError ? null : exception.Message,
-            },
+            ProblemDetails = problemDetails,
         }).ConfigureAwait(false);
     }
+
+    private static ProblemDetails Describe(Exception exception) => exception switch
+    {
+        // The domain names the offending field, so the field-scoped body needs no second copy of the
+        // rule in the endpoint. Dictionary keys are camel-cased by ApiJsonSerializerContext.
+        InvalidProductNameException invalidProductName => new HttpValidationProblemDetails(
+            new Dictionary<string, string[]>
+            {
+                [invalidProductName.Field] = [invalidProductName.Message],
+            })
+        {
+            Status = StatusCodes.Status400BadRequest,
+            Title = "Invalid product.",
+        },
+
+        // The upstream broker or Schema Registry failed, not the caller.
+        EventPublishFailedException => new ProblemDetails
+        {
+            Status = StatusCodes.Status502BadGateway,
+            Title = "Failed to publish the ProductCreated event.",
+            Detail = exception.Message,
+        },
+
+        // An unmapped exception message may carry internals, so it is logged and not returned.
+        _ => new ProblemDetails
+        {
+            Status = StatusCodes.Status500InternalServerError,
+            Title = "Unexpected error.",
+        },
+    };
 
     [LoggerMessage(EventId = 2001, Level = LogLevel.Error, Message = "Unhandled exception.")]
     private static partial void LogUnhandled(ILogger logger, Exception exception);

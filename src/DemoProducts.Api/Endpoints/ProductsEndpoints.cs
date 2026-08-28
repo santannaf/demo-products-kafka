@@ -1,5 +1,4 @@
 using DemoProducts.Application.UseCases.CreateProduct;
-using DemoProducts.Domain.Products;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace DemoProducts.Api.Endpoints;
@@ -16,27 +15,14 @@ internal static class ProductsEndpoints
         return endpoints;
     }
 
-    private static async Task<Results<Created<CreateProductResponse>, ValidationProblem>> CreateProductAsync(
+    // No validation here on purpose: Product.Create owns the name rules, and GlobalExceptionHandler
+    // turns InvalidProductNameException into the field-scoped 400. A copy of the rules in this method
+    // would make the domain's copy unreachable and let the two drift apart.
+    private static async Task<Created<CreateProductResponse>> CreateProductAsync(
         CreateProductRequest request,
         CreateProductUseCase createProductUseCase,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Name))
-        {
-            return TypedResults.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["name"] = ["Name is required."],
-            });
-        }
-
-        if (request.Name.Trim().Length > Product.MaxNameLength)
-        {
-            return TypedResults.ValidationProblem(new Dictionary<string, string[]>
-            {
-                ["name"] = [$"Name must be at most {Product.MaxNameLength} characters."],
-            });
-        }
-
         var response = await createProductUseCase
             .ExecuteAsync(request, cancellationToken)
             .ConfigureAwait(false);

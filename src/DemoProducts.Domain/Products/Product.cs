@@ -6,6 +6,11 @@ namespace DemoProducts.Domain.Products;
 /// A product. This sample has no persistence: the instance lives only long enough to build the
 /// ProductCreated event that is published to Kafka.
 /// </summary>
+/// <remarks>
+/// <see cref="Create"/> is the only gate on a product name. Nothing upstream re-checks these rules:
+/// a caller that needs to answer a validation failure reads
+/// <see cref="InvalidProductNameException.Field"/> instead of copying the rule.
+/// </remarks>
 public sealed class Product
 {
     public const int MaxNameLength = 200;
@@ -24,7 +29,7 @@ public sealed class Product
     {
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new InvalidProductNameException("Product name is required.");
+            throw new InvalidProductNameException(nameof(Name), "Product name is required.");
         }
 
         var trimmedName = name.Trim();
@@ -32,6 +37,7 @@ public sealed class Product
         if (trimmedName.Length > MaxNameLength)
         {
             throw new InvalidProductNameException(
+                nameof(Name),
                 $"Product name must be at most {MaxNameLength} characters.");
         }
 
