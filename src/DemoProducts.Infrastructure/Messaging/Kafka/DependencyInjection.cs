@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Confluent.SchemaRegistry;
 using DemoProducts.Application.Abstractions.Messaging;
+using DemoProducts.Infrastructure.Messaging.Delivery;
 using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Generated;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -80,6 +81,7 @@ public static class DependencyInjection
 
         // The listener is an adapter, not host code: it lives beside the producer adapter so no Avro or
         // Confluent type has to be named from a host project.
+        services.AddSingleton<AtLeastOnceDelivery>();
         services.AddHostedService<ProductCreatedListener>();
 
         return services;
