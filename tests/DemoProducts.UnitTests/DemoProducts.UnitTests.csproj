@@ -16,6 +16,7 @@
   <ItemGroup>
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="NSubstitute" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="FluentAssertions" />
   </ItemGroup>
 

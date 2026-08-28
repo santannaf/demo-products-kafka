@@ -30,8 +30,25 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        AddKafkaOptions(services, configuration);
-        AddSchemaRegistryClient(services);
+        // Bound with the concrete type rather than through a generic helper: the configuration binding
+        // source generator cannot see through a type parameter (SYSLIB1104) and would fall back to
+        // reflection, which a trimmed binary cannot do. That is also why the two Add methods below
+        // repeat the shape instead of sharing one.
+        services
+            .AddOptions<KafkaProducerOptions>()
+            .Bind(configuration.GetSection(KafkaProducerOptions.SectionName))
+            .ValidateOnStart();
+
+        services.TryAddSingleton<IValidateOptions<KafkaProducerOptions>, KafkaProducerOptionsValidator>();
+
+        // One ownership model for both sides: the client caches schemas and is built to be shared, so
+        // the container holds it and disposes it. Neither adapter constructs a private one.
+        services.TryAddSingleton<ISchemaRegistryClient>(serviceProvider =>
+            new CachedSchemaRegistryClient(new SchemaRegistryConfig
+            {
+                Url = serviceProvider
+                    .GetRequiredService<IOptions<KafkaProducerOptions>>().Value.SchemaRegistry.Url,
+            }));
 
         // The container creates it, so the container disposes it — that is what flushes in-flight
         // messages at shutdown.
@@ -47,33 +64,20 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        AddKafkaOptions(services, configuration);
-        AddSchemaRegistryClient(services);
-
-        return services;
-    }
-
-    private static void AddKafkaOptions(IServiceCollection services, IConfiguration configuration)
-    {
-        // Bound with the concrete type rather than through a generic helper: the configuration binding
-        // source generator cannot see through a type parameter (SYSLIB1104) and would fall back to
-        // reflection, which a trimmed binary cannot do.
         services
-            .AddOptions<KafkaOptions>()
-            .Bind(configuration.GetSection(KafkaOptions.SectionName))
+            .AddOptions<KafkaConsumerOptions>()
+            .Bind(configuration.GetSection(KafkaConsumerOptions.SectionName))
             .ValidateOnStart();
 
-        services.TryAddSingleton<IValidateOptions<KafkaOptions>, KafkaOptionsValidator>();
-    }
+        services.TryAddSingleton<IValidateOptions<KafkaConsumerOptions>, KafkaConsumerOptionsValidator>();
 
-    /// <remarks>
-    /// One ownership model for both sides. The client caches schemas and is built to be shared, so the
-    /// container holds it and disposes it; neither adapter constructs a private one.
-    /// </remarks>
-    private static void AddSchemaRegistryClient(IServiceCollection services) =>
         services.TryAddSingleton<ISchemaRegistryClient>(serviceProvider =>
             new CachedSchemaRegistryClient(new SchemaRegistryConfig
             {
-                Url = serviceProvider.GetRequiredService<IOptions<KafkaOptions>>().Value.SchemaRegistry.Url,
+                Url = serviceProvider
+                    .GetRequiredService<IOptions<KafkaConsumerOptions>>().Value.SchemaRegistry.Url,
             }));
+
+        return services;
+    }
 }

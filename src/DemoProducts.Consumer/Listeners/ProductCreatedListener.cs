@@ -14,12 +14,12 @@ using Microsoft.Extensions.Options;
 namespace DemoProducts.Consumer.Listeners;
 
 internal sealed partial class ProductCreatedListener(
-    IOptions<KafkaOptions> options,
+    IOptions<KafkaConsumerOptions> options,
     ISchemaRegistryClient schemaRegistryClient,
     IServiceScopeFactory serviceScopeFactory,
     ILogger<ProductCreatedListener> logger) : BackgroundService
 {
-    private readonly KafkaOptions kafka = options.Value;
+    private readonly KafkaConsumerOptions kafka = options.Value;
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
         // IConsumer.Consume blocks the calling thread; running the loop inline would stall host startup.

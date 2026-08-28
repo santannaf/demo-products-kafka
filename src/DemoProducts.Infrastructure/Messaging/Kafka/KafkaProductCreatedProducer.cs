@@ -28,7 +28,7 @@ internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProv
     private bool disposed;
 
     public KafkaProductCreatedProducer(
-        IOptions<KafkaOptions> options,
+        IOptions<KafkaProducerOptions> options,
         ISchemaRegistryClient schemaRegistryClient)
     {
         ArgumentNullException.ThrowIfNull(options);
