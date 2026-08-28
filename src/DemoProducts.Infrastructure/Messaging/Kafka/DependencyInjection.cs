@@ -31,8 +31,10 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(configuration);
 
         AddKafkaOptions(services, configuration);
+        AddSchemaRegistryClient(services);
 
-        services.AddSingleton<KafkaConnection>();
+        // The container creates it, so the container disposes it — that is what flushes in-flight
+        // messages at shutdown.
         services.AddSingleton<ISendProductCreatedEventProvider, KafkaProductCreatedProducer>();
 
         return services;
@@ -46,12 +48,7 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(configuration);
 
         AddKafkaOptions(services, configuration);
-
-        services.AddSingleton<ISchemaRegistryClient>(serviceProvider =>
-            new CachedSchemaRegistryClient(new SchemaRegistryConfig
-            {
-                Url = serviceProvider.GetRequiredService<IOptions<KafkaOptions>>().Value.SchemaRegistry.Url,
-            }));
+        AddSchemaRegistryClient(services);
 
         return services;
     }
@@ -68,4 +65,15 @@ public static class DependencyInjection
 
         services.TryAddSingleton<IValidateOptions<KafkaOptions>, KafkaOptionsValidator>();
     }
+
+    /// <remarks>
+    /// One ownership model for both sides. The client caches schemas and is built to be shared, so the
+    /// container holds it and disposes it; neither adapter constructs a private one.
+    /// </remarks>
+    private static void AddSchemaRegistryClient(IServiceCollection services) =>
+        services.TryAddSingleton<ISchemaRegistryClient>(serviceProvider =>
+            new CachedSchemaRegistryClient(new SchemaRegistryConfig
+            {
+                Url = serviceProvider.GetRequiredService<IOptions<KafkaOptions>>().Value.SchemaRegistry.Url,
+            }));
 }
