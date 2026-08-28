@@ -1,5 +1,4 @@
 using DemoProducts.Application;
-using DemoProducts.Consumer.Listeners;
 using DemoProducts.Infrastructure.Logging;
 using DemoProducts.Infrastructure.Messaging.Kafka;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,8 +19,6 @@ builder.Services.AddSerilog(loggerConfiguration =>
 builder.Services
     .AddApplication()
     .AddKafkaConsumer(builder.Configuration);
-
-builder.Services.AddHostedService<ProductCreatedListener>();
 
 var host = builder.Build();
 

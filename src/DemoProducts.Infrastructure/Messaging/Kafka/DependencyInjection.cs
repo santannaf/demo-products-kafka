@@ -78,6 +78,10 @@ public static class DependencyInjection
                     .GetRequiredService<IOptions<KafkaConsumerOptions>>().Value.SchemaRegistry.Url,
             }));
 
+        // The listener is an adapter, not host code: it lives beside the producer adapter so no Avro or
+        // Confluent type has to be named from a host project.
+        services.AddHostedService<ProductCreatedListener>();
+
         return services;
     }
 }

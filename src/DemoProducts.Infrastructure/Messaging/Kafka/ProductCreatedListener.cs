@@ -3,7 +3,6 @@ using Confluent.Kafka.SyncOverAsync;
 using Confluent.SchemaRegistry;
 using Confluent.SchemaRegistry.Serdes;
 using DemoProducts.Application.Events.ProductCreated;
-using DemoProducts.Infrastructure.Messaging.Kafka;
 using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Generated;
 using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Mappers;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,7 +10,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace DemoProducts.Consumer.Listeners;
+namespace DemoProducts.Infrastructure.Messaging.Kafka;
 
 internal sealed partial class ProductCreatedListener(
     IOptions<KafkaConsumerOptions> options,
