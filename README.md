@@ -7,7 +7,8 @@ offset only after the handler succeeds.
 
 ```text
 POST /products -> Application -> ProductCreatedEvent -> Kafka producer -> Avro -> Schema Registry
-              -> Kafka topic -> ProductCreatedListener -> ProductCreatedEventHandler -> Serilog
+              -> Kafka topic -> KafkaProductCreatedSubscription -> AtLeastOnceDelivery
+              -> ProductCreatedEventHandler -> Serilog
 ```
 
 ## Layout
@@ -15,10 +16,16 @@ POST /products -> Application -> ProductCreatedEvent -> Kafka producer -> Avro -
 ```text
 src/DemoProducts.Domain           Product, ProductCreatedEvent, domain exception. Depends on nothing.
 src/DemoProducts.Application      Use case, handler, and the outbound port. No Kafka/Avro/Schema Registry.
-src/DemoProducts.Infrastructure   Kafka, Avro, Schema Registry, Serilog wiring. Implements the port.
+src/DemoProducts.Infrastructure   Kafka, Avro, Schema Registry, Serilog wiring. Implements the port,
+                                  and hosts the delivery protocol and both of its adapters.
 src/DemoProducts.Api              Minimal API, POST /products. Native AOT.
-src/DemoProducts.Consumer         Worker host, ProductCreatedListener.
+src/DemoProducts.Consumer         Worker host. Program.cs and nothing else.
+tests/DemoProducts.UnitTests      xUnit v3. Domain rules, options validators, the Avro round-trip,
+                                  and the delivery protocol against a fake subscription.
 ```
+
+`CONTEXT.md` carries the domain glossary — what a Product, a ProductCreated event, a subscription seam
+and the rewind rule mean here.
 
 Dependencies point inward: `Api`/`Consumer` → `Application`, `Infrastructure`; `Infrastructure` →
 `Application`; `Application` → `Domain`; `Domain` → nothing. `Domain` and `Application` reference **no**
@@ -73,6 +80,27 @@ curl http://localhost:8081/subjects/product-created-value/versions/latest
 
 > The smoke is documented rather than scripted: automating it would need a backgrounded server plus a
 > `kill`, which this repository's delivery policy forbids. `dotnet build` is the automated gate.
+
+## Tests
+
+```bash
+dotnet test
+```
+
+`global.json` opts into the Microsoft.Testing.Platform runner — .NET 10's `dotnet test` no longer drives
+VSTest, and xUnit v3 test projects carry their own runner. No broker, no container, no Docker: the suite
+is hermetic and runs in about a second.
+
+What is covered, and why each earns its place:
+
+- **`Product.Create`** — the name rules. Reachable for the first time: the endpoint used to re-check the
+  same two rules, so nothing ever reached the domain guards over HTTP.
+- **`KafkaProducerOptionsValidator` / `KafkaConsumerOptionsValidator`** — including that each host binds
+  from a configuration with no trace of the other's section, and that the key names survived the split.
+- **`ProductCreatedAvroMapper`** — the `DateTimeKind.Utc` round-trip, in both directions.
+- **`AtLeastOnceDelivery`** — the offset protocol, against a fake subscription: a handled message is
+  committed, a failed one is never committed, is rewound, and is paused over *after* the rewind. Deleting
+  the `SeekBack` call turns three of these red; before the seam existed it turned nothing red.
 
 ## Build
 
@@ -143,8 +171,8 @@ cd publish/api && env Kafka__BootstrapServers= ./DemoProducts.Api
 
 That boot smoke is worth running: in the *native binary* it proves Serilog's code-based configuration
 survives trimming (template, `ThreadId`, `ShortLevel` and `ShortContext` enrichers all render), the
-source-generated configuration binder bound the whole `Kafka` tree, the DI graph builds, and
-`KafkaOptionsValidator` runs. `docker run --rm -e Kafka__BootstrapServers= demo-products-api` shows the
+source-generated configuration binder bound the `Kafka` tree, the DI graph builds, and
+`KafkaProducerOptionsValidator` runs. `docker run --rm -e Kafka__BootstrapServers= demo-products-api` shows the
 same from inside the image.
 
 It does **not** exercise the produce path — `_SCHEMA` initialises lazily on the first serialize. To close
@@ -165,28 +193,33 @@ Two things the planning notes got wrong, corrected by actually running the gate:
 Everything is in `appsettings.json` — no broker URL, topic name, group id or port is hardcoded:
 
 ```text
-Api:Urls
-Kafka:BootstrapServers          Kafka:ClientId
-Kafka:Producer                  Acks, EnableIdempotence, MessageTimeoutMs
-Kafka:Consumer                  GroupId, AutoOffsetReset, EnableAutoCommit,
+Api:Urls                        (Api only)
+Kafka:BootstrapServers          Kafka:ClientId                  (both)
+Kafka:Producer                  Acks, EnableIdempotence, MessageTimeoutMs           (Api only)
+Kafka:Consumer                  GroupId, AutoOffsetReset, EnableAutoCommit,         (Consumer only)
                                 SessionTimeoutMs, MaxPollIntervalMs, RetryDelayMs
-Kafka:SchemaRegistry            Url, AutoRegisterSchemas
-Kafka:Topics:ProductCreated
+Kafka:SchemaRegistry:Url                                                            (both)
+Kafka:SchemaRegistry:AutoRegisterSchemas                                            (Api only)
+Kafka:Topics:ProductCreated                                                         (both)
 Serilog                         MinimumLevel.Default, MinimumLevel.Override, OutputTemplate
 ```
 
-`KafkaOptionsValidator` runs at boot under `ValidateOnStart()` and fails the host with the offending key
+Each host binds and validates **only the keys it reads**: `KafkaProducerOptions` in the Api,
+`KafkaConsumerOptions` in the Consumer, both from the same `Kafka` section. The key names are the same
+ones as before the split, so `Kafka__*` environment overrides are unaffected.
+
+The matching validator runs at boot under `ValidateOnStart()` and fails the host with the offending key
 named. It also **rejects `Kafka:Consumer:EnableAutoCommit = true`**: the key stays configurable as the
 brief asks, but the sample's commit-after-success contract is enforced rather than assumed.
 
 Two notes on the shape of the configuration:
 
-- **Both hosts carry the whole `Kafka` tree** (the Api's `Consumer` block is unused). One options class,
-  one validator, and the tree matches the brief's configuration listing exactly. Split validators per host
-  would be the next refinement.
+- **Neither host carries the other's keys.** The Api boots without `Kafka:Consumer:GroupId` and the
+  Consumer without `Kafka:Producer:Acks`; previously both refused to start without configuration they
+  never read.
 - **`EnableAutoOffsetStore` is not a configuration key.** It is pinned to `false` in
-  `ProductCreatedListener`, because committing only after success requires the offset store to stay
-  manual; exposing it would let configuration silently break the contract.
+  `KafkaProductCreatedSubscription`, because committing only after success requires the offset store to
+  stay manual; exposing it would let configuration silently break the contract.
 
 Serilog reads its *values* from `appsettings.json` but is *wired in code*
 (`Infrastructure/Logging/SerilogConfiguration.cs`). `ReadFrom.Configuration` resolves sinks and enrichers
@@ -220,9 +253,13 @@ mapper pins `DateTimeKind.Utc` in both directions.
 
 ## Known limitations
 
-- **No automated tests.** By decision for this iteration; `test-strategy.md` designs the suite that would
-  cover the mapper roundtrip, the options validator, the use case and the listener's commit/`Seek`
-  semantics. Until it exists there is no regression net.
+- **The unit suite stops at the seams.** `tests/DemoProducts.UnitTests` covers the domain rules, both
+  options validators, the Avro round-trip and the delivery protocol, but nothing exercises a real broker:
+  `KafkaProductCreatedSubscription` and `KafkaProductCreatedProducer` — the two adapters — have no
+  integration test. Testcontainers against Kafka plus Schema Registry is the next layer.
+- **`CreateProductUseCase` is untested.** Three lines of orchestration whose only interesting behaviour —
+  that the response is not returned until the broker acknowledges — would be asserted through a mock of
+  the port it already depends on. Judged not worth the test.
 - **The AOT publish carries 139 third-party ILC warnings** (see above). The published native binary has
   been booted, but no *produce* smoke has been run against it, so the `Confluent.Kafka` P/Invoke family —
   the one the ADR grades as not closed by static argument — stays argued rather than proven.
