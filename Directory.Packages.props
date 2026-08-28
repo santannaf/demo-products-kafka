@@ -36,4 +36,19 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
   </ItemGroup>
 
+  <ItemGroup Label="Testing">
+    <!--
+      xUnit v3 test projects are executables carrying their own Microsoft.Testing.Platform runner.
+      No Microsoft.NET.Test.Sdk and no VSTest adapter: .NET 10 dropped the VSTest path for dotnet test
+      (see dotnet.config at the repo root).
+    -->
+    <PackageVersion Include="xunit.v3" Version="4.0.0" />
+    <PackageVersion Include="NSubstitute" Version="6.2.0" />
+    <!--
+      Pinned to the 7.x line on purpose: FluentAssertions 8.0.0 moved to a paid commercial licence.
+      7.2.2 is the last Apache-2.0 release.
+    -->
+    <PackageVersion Include="FluentAssertions" Version="7.2.2" />
+  </ItemGroup>
+
 </Project>

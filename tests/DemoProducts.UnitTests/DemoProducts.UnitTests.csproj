@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- xUnit v3 test projects run as executables. -->
+    <OutputType>Exe</OutputType>
+    <RootNamespace>DemoProducts.UnitTests</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DemoProducts.Domain\DemoProducts.Domain.csproj" />
+    <ProjectReference Include="..\..\src\DemoProducts.Application\DemoProducts.Application.csproj" />
+    <ProjectReference Include="..\..\src\DemoProducts.Infrastructure\DemoProducts.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>
