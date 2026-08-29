@@ -3,6 +3,14 @@
   <PropertyGroup>
     <!-- xUnit v3 test projects run as executables. -->
     <OutputType>Exe</OutputType>
+    <!--
+      Without this the executable's entry point is xUnit's OWN console runner, which does not understand
+      the arguments `dotnet test` passes it (a `nologo` flag, plus `server dotnettestcli` and a
+      `dotnet-test-pipe` path, each in double-dash form). It answers `error: unknown option` and exits 3,
+      which `dotnet test` reports as "Zero tests ran" — a command that looks like it ran the suite and
+      asserted nothing. Running the executable directly still worked, which is what made it easy to miss.
+    -->
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <RootNamespace>DemoProducts.UnitTests</RootNamespace>
     <Nullable>enable</Nullable>
   </PropertyGroup>
