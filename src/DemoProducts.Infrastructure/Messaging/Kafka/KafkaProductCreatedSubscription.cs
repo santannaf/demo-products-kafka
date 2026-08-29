@@ -15,10 +15,10 @@ namespace DemoProducts.Infrastructure.Messaging.Kafka;
 /// </summary>
 internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedSubscription, IDisposable
 {
-    private readonly IConsumer<string, ProductCreatedAvro> consumer;
-    private readonly int retryDelayMs;
-    private readonly ILogger logger;
-    private bool disposed;
+    private readonly IConsumer<string, ProductCreatedAvro> _consumer;
+    private readonly int _retryDelayMs;
+    private readonly ILogger _logger;
+    private bool _disposed;
 
     public KafkaProductCreatedSubscription(
         KafkaConsumerOptions kafka,
@@ -28,17 +28,17 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         ArgumentNullException.ThrowIfNull(kafka);
         ArgumentNullException.ThrowIfNull(schemaRegistryClient);
 
-        this.logger = logger;
-        retryDelayMs = kafka.Consumer.RetryDelayMs;
+        this._logger = logger;
+        _retryDelayMs = kafka.Consumer.RetryDelayMs;
 
-        consumer = new ConsumerBuilder<string, ProductCreatedAvro>(BuildConsumerConfig(kafka))
+        _consumer = new ConsumerBuilder<string, ProductCreatedAvro>(BuildConsumerConfig(kafka))
             .SetValueDeserializer(
                 new AvroDeserializer<ProductCreatedAvro>(schemaRegistryClient, new AvroDeserializerConfig())
                     .AsSyncOverAsync())
             .SetErrorHandler((_, error) => LogConsumerError(logger, error.Reason))
             .Build();
 
-        consumer.Subscribe(kafka.Topics.ProductCreated);
+        _consumer.Subscribe(kafka.Topics.ProductCreated);
         LogSubscribed(logger, kafka.Topics.ProductCreated, kafka.Consumer.GroupId);
     }
 
@@ -48,13 +48,13 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
 
         try
         {
-            result = consumer.Consume(cancellationToken);
+            result = _consumer.Consume(cancellationToken);
         }
         catch (ConsumeException exception)
         {
             // Reported here rather than raised: a failed read is not a failed delivery, and the protocol
             // answers a null by reading again.
-            LogConsumeFailed(logger, exception);
+            LogConsumeFailed(_logger, exception);
             return null;
         }
 
@@ -74,31 +74,31 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         ArgumentNullException.ThrowIfNull(received);
 
         // Commit(ConsumeResult) stores offset + 1, which is what "already handled" means to Kafka.
-        consumer.Commit(Position(received));
+        _consumer.Commit(Position(received));
     }
 
     public void SeekBack(ReceivedProductCreated received)
     {
         ArgumentNullException.ThrowIfNull(received);
 
-        consumer.Seek(Position(received).TopicPartitionOffset);
+        _consumer.Seek(Position(received).TopicPartitionOffset);
     }
 
     public void PauseBeforeRetry(CancellationToken cancellationToken) =>
-        cancellationToken.WaitHandle.WaitOne(retryDelayMs);
+        cancellationToken.WaitHandle.WaitOne(_retryDelayMs);
 
     public void Dispose()
     {
-        if (disposed)
+        if (_disposed)
         {
             return;
         }
 
         // Leaves the consumer group cleanly instead of waiting for the session timeout.
-        consumer.Close();
-        consumer.Dispose();
+        _consumer.Close();
+        _consumer.Dispose();
 
-        disposed = true;
+        _disposed = true;
     }
 
     private static ConsumeResult<string, ProductCreatedAvro> Position(ReceivedProductCreated received) =>

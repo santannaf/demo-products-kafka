@@ -5,14 +5,12 @@ namespace DemoProducts.Api.Endpoints;
 
 internal static class ProductsEndpoints
 {
-    public static IEndpointRouteBuilder MapProductsEndpoints(this IEndpointRouteBuilder endpoints)
+    public static void MapProductsEndpoints(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
 
         endpoints.MapPost("/products", CreateProductAsync)
             .WithName("CreateProduct");
-
-        return endpoints;
     }
 
     // No validation here on purpose: Product.Create owns the name rules, and GlobalExceptionHandler
