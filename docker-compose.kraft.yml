@@ -38,7 +38,10 @@ services:
       kafka:
         condition: service_healthy
     ports:
-      - "8081:8081"
+      # 18081, not the conventional 8081: that port is taken on the development machine this sample
+      # is maintained on. Only the published (host) port moves - inside the compose network Schema
+      # Registry still listens on 8081, which is what Control Center and the healthcheck use.
+      - "18081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
@@ -48,3 +51,37 @@ services:
       interval: 10s
       timeout: 5s
       retries: 15
+
+  # Control Center in `management` mode: the `apache/kafka` image has no Confluent Metrics Reporter,
+  # so the monitoring charts would be empty either way. Topic browser, message inspection, consumer
+  # groups and the Schema Registry view all work against a plain Kafka 4.x broker.
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:7.7.1
+    container_name: demo-products-control-center
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: kafka:29092
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONTROL_CENTER_MODE_ENABLE: management
+      # Single-broker cluster: every internal topic has to drop to one replica or C3 never starts.
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_REPLICATION: 1
+      CONTROL_CENTER_COMMAND_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_METRICS_TOPIC_REPLICATION: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_STREAMS_NUM_STREAM_THREADS: 1
+      PORT: 9021
+    healthcheck:
+      test: ["CMD", "curl", "--silent", "--fail", "http://localhost:9021/healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 20

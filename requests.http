@@ -1,5 +1,5 @@
 @api = http://localhost:5080
-@schemaRegistry = http://localhost:8081
+@schemaRegistry = http://localhost:18081
 
 ### Create a product (happy path) -> 201 Created
 POST {{api}}/products
