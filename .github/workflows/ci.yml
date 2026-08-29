@@ -129,10 +129,18 @@ jobs:
           check consumer "src/DemoProducts.Consumer/DemoProducts.Consumer.csproj" "$CONSUMER_BASELINE" \
             -p:PublishAot=true
 
-      - name: Start Kafka, Schema Registry and Control Center
+      - name: Start Kafka and Schema Registry
         run: |
           docker compose up -d --wait kafka schema-registry
           curl --silent --fail --retry 20 --retry-delay 3 --retry-all-errors http://localhost:18081/subjects
+
+          # Created explicitly rather than left to auto-creation. On a runner the broker is empty, and a
+          # consumer that subscribes to a topic that does not exist yet logs
+          # "Subscribed topic not available: Broker: Unknown topic or partition" and gets no partition
+          # assignment until the first produce creates it. That is what broke this job the first time it
+          # ran for real.
+          docker compose exec -T kafka kafka-topics --bootstrap-server localhost:29092 \
+            --create --if-not-exists --topic product-created --partitions 1 --replication-factor 1
 
       # The gate ADR 0001 calls the one that is still owed, now owed no longer. It is the only step here
       # that runs the native binaries, and it is what found both trimming defects the amendment records.
@@ -140,14 +148,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          ./publish/consumer/DemoProducts.Consumer > consumer.log 2>&1 &
+          # Earliest and a throwaway group, overriding the shipped defaults on purpose. What this step
+          # asserts is the round trip through the two NATIVE binaries; the offset-reset policy is not
+          # under test. With the shipped Latest the assertion would depend on partition assignment
+          # completing before the produce - broker timing the application does not control, and a race
+          # this job lost on its first real run. Waiting for the "Subscribed to topic" line is not
+          # enough: it is written when Subscribe() returns, which is before any partition is assigned.
+          #
+          # Earliest plus a group that has never committed makes the order irrelevant: whenever the
+          # consumer joins, it reads the topic from the beginning and finds the message.
+          Kafka__Consumer__AutoOffsetReset=Earliest \
+          Kafka__Consumer__GroupId="ci-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            ./publish/consumer/DemoProducts.Consumer > consumer.log 2>&1 &
           consumer_pid=$!
           ./publish/api/DemoProducts.Api > api.log 2>&1 &
           api_pid=$!
           trap 'kill $consumer_pid $api_pid 2>/dev/null || true' EXIT
 
-          # The consumer defaults to AutoOffsetReset=Latest, so it has to be subscribed BEFORE the
-          # message is produced or it starts past it and this step hangs for no real reason.
           for _ in $(seq 1 40); do
             grep -q 'Subscribed to topic' consumer.log && break
             sleep 2
@@ -175,9 +192,9 @@ jobs:
 
           # The accented name is not decoration: it is what proves the hand-written UTF-8 length prefix
           # in AvroBinaryWriter agrees with what Avro's reader expects on the other side.
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 30); do
             grep -q 'ProductCreated consumed' consumer.log && break
-            sleep 1
+            sleep 2
           done
 
           if ! grep -q 'Name=Café torrado' consumer.log; then

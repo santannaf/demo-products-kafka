@@ -68,7 +68,12 @@ services:
     environment:
       CONTROL_CENTER_BOOTSTRAP_SERVERS: kafka:29092
       CONTROL_CENTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      CONTROL_CENTER_MODE_ENABLE: management
+      # `all`, not `management`. The throughput and latency charts stay empty either way,
+      # because neither cp-kafka nor apache/kafka ships the Confluent Metrics Reporter (it
+      # lives in cp-server). `management` was chosen first for that reason and it was the
+      # wrong trade: an empty chart is a smaller cost than a feature that is switched off,
+      # and the Schema Registry view is the reason this service is here at all.
+      CONTROL_CENTER_MODE_ENABLE: all
       # Single-broker cluster: every internal topic has to drop to one replica or C3 never starts.
       CONTROL_CENTER_REPLICATION_FACTOR: 1
       CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1

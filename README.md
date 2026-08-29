@@ -53,9 +53,11 @@ docker compose up -d
 Schema Registry is published on `18081`, not the conventional `8081`, because that port is taken on the
 machine this sample is maintained on; inside the compose network it is still `8081`. Control Center is
 last to answer — it builds its own internal topics before serving `9021`. It runs in `management` mode: topic browser, message inspection (Avro decoded through Schema
-Registry), consumer groups and the schema view. The throughput/latency charts stay empty because
-neither `cp-kafka` nor `apache/kafka` ships the Confluent Metrics Reporter — that needs `cp-server`,
-which is more broker than this sample warrants.
+Registry), consumer groups and the schema view. It runs in `all` mode; the throughput/latency charts stay
+empty regardless, because neither `cp-kafka` nor `apache/kafka` ships the Confluent Metrics Reporter —
+that needs `cp-server`, which is more broker than this sample warrants. An earlier revision used
+`management` mode for that reason, which was the wrong trade: an empty chart costs less than a feature
+that is switched off.
 
 ```bash
 # 2. The consumer
