@@ -305,11 +305,110 @@ analysable, not that the binary works.** Only an end-to-end request through the 
 the reflection that trimming broke — and here it took the real Schema Registry, not a stub, because the
 symptom was a well-formed HTTP call with an empty body.
 
+### A later change narrowed, but did not settle, the Consumer's exemption
+
+`Kafka:Consumer:EnableAvroReader` was added after this ADR, and its `false` branch reads messages as an
+Avro `GenericRecord` instead of the generated `ProductCreatedAvro`. That path does **not** go through
+`Avro.ObjectCreator`, which is the by-name `Activator` resolution the table at the top of this ADR grades
+as "not AOT-safe" and the sole reason decision 2 keeps the Consumer off Native AOT.
+
+So the reason now covers one of two read paths rather than the whole host. It is deliberately **not**
+being treated as settled: `Apache.Avro` still ships only `netstandard2.0`/`netstandard2.1` assets and still
+carries `Newtonsoft.Json`, and this amendment exists precisely because a reachability argument that was
+never run against a real binary turned out to be wrong twice. Publishing the Consumer with
+`PublishAot=true` and running a consume smoke against a real broker is what would settle it. Until someone
+does that, decision 2 stands as written and this paragraph is the note that its premise narrowed.
+
+### Newtonsoft.Json is off the Api's graph, and the count is 4
+
+The amendment above left 43 warnings standing, 34 of them Newtonsoft.Json, on the argument that they were
+third-party and unfixable from here. The first half was true; the second was a statement about the
+packages, not about the application.
+
+`Newtonsoft.Json` reaches the Api through exactly two edges, both on the **producing** path:
+
+1. `Confluent.SchemaRegistry`'s REST client, which serialises every request and response with it. Note
+   that this is a **direct** dependency of that package — its `.nuspec` declares `Newtonsoft.Json` in
+   every target framework group. The reachability argument in this ADR missed that.
+2. `Apache.Avro`, whose `Schema.Parse` reads the schema JSON with it, reached from
+   `ProductCreatedAvro._SCHEMA`.
+
+Both edges exist because the Api used Confluent's Avro serde. It no longer does. The producing side now
+owns two small pieces of its own:
+
+- `Messaging/Kafka/SchemaRegistry/` — the two Schema Registry calls a producer makes (register, look up)
+  over `System.Text.Json` with a source-generated context, plus the `.avsc` as an `EmbeddedResource` so
+  the schema that is registered is the same file the code generator consumes.
+- `Messaging/Kafka/Wire/` — the Avro binary encoding for one flat record of primitives, and Confluent's
+  five-byte frame.
+
+The **Consumer keeps Confluent's serde and client.** It runs on the CLR where reflection is intact, and it
+needs schema-by-id resolution and caching that the producing direction does not. Hand-writing a
+replacement for code that works would be cost with no payer.
+
+`139 → 43 → 4`. What is left is `Confluent.Kafka` alone: `Librdkafka.SetDelegates` (IL2067, rooted above),
+`Marshal.PtrToStructure<T>` (IL2091), and two on `OAuthBearer.Aws.AwsAutoWireDispatcher` for AWS wiring
+this application never configures.
+
+**The bar this had to clear.** Hand-writing a wire format is normally a bad trade, and it is only defensible
+here because the scope is four fields of two primitive types and because the tests read the bytes back with
+the **real Apache.Avro reader** — the same one the Consumer uses — rather than against a second
+hand-written expectation. A byte-for-byte constant written by the encoder's author proves the two agree
+with each other, not that either agrees with Avro. If the schema ever grows a nested record, a union or an
+enum, the honest move is to put `Apache.Avro` back on the producing side and accept its warnings, not to
+grow `AvroBinaryWriter`.
+
+### The last 4 are terminal at these versions, and are not suppressed
+
+The four that remain were re-examined rather than accepted by default, and the conclusion is that no
+mechanism available to this repository removes them.
+
+A trim diagnostic is reported at the offending call site. All four sites are inside `Confluent.Kafka`, so
+the annotation that would silence them — `[DynamicallyAccessedMembers]` on a parameter, a generic argument
+or a return value — has to be added by the package. Three things are available here, and their reach is
+the point:
+
+| | Effect | On these four |
+| --- | --- | --- |
+| `[DynamicDependency]` | roots what the reflection looks for, fixing the **behaviour** | Already applied to `SetDelegates`. It works, and the warning stays: the diagnostic describes a missing annotation on Confluent's parameter, not a missing root |
+| Removing reachability | takes the code off the graph | This is what took 43 to 4. These four hang off `ProducerBuilder.Build()` and `ProduceAsync`, so removing them means not producing to Kafka from the native binary |
+| `<NoWarn>` / `[UnconditionalSuppressMessage]` | hides the line | Rejected — see below |
+
+Two per-warning notes worth keeping:
+
+- **`AwsAutoWireDispatcher` (IL2026, IL2075)** is AWS OAuth auto-wiring reached from client construction.
+  This service configures neither `SecurityProtocol` nor `SaslMechanism`, so the connection is PLAINTEXT
+  and that path cannot execute. Reachability is static, though, and ILC cannot see a runtime configuration.
+  These two are also **new**: they did not exist at `Confluent.Kafka 2.14.2`. The upgrade removed 96
+  warnings and added these 2.
+- **Downgrading is not the answer.** `2.14.2` would drop the two above, and its `ConsumerConfig` has no
+  `MaxPollRecords` — a setting this service depends on to bound handling time inside
+  `MaxPollIntervalMs`. Losing a real throughput control to remove a diagnostic about code that never runs
+  is the wrong trade.
+
+**Why they are not suppressed.** The strongest case against is the one warning that is not hypothetical:
+`IL2067` on `Librdkafka.SetDelegates` is the diagnostic for the defect this amendment opens with — the
+`Sequence contains no matching element` that made the native binary answer `500`. It is rooted now, and
+the root is proven by ablation, but the warning remains an accurate description of a hazard this
+repository has actually experienced. A `<NoWarn>` would delete the description, not the hazard, and would
+delete it for every future occurrence of the same code too.
+
+> **Superseded by the amendment below.** The paragraph that followed here said `src/**` contains zero
+> `<NoWarn>` entries for an IL code, and that the four print on every publish. Both are now false: the
+> publish is silent by default. What is still true is that there are zero `[UnconditionalSuppressMessage]`
+> attributes and zero `#pragma warning disable IL...` in `src/**`, and zero diagnostics from
+> `DemoProducts.*`.
+
+**What would actually close them** is `Confluent.Kafka` shipping trim annotations. Its `net10.0` asset
+carries none — verified, not assumed: the assembly contains no `[DynamicallyAccessedMembers]`,
+`[RequiresUnreferencedCode]` or `[RequiresDynamicCode]` at all. Until that changes, the number to watch
+stays **0 diagnostics from `DemoProducts.*`**, and 4 is the floor.
+
 ### Result after this amendment
 
 | | Before | After |
 | --- | --- | --- |
-| ILC warnings | 139 | **43** (0 from `DemoProducts.*`) |
+| ILC warnings | 139 | **4** (0 from `DemoProducts.*`, 0 Newtonsoft) |
 | `POST /products` on the native binary | `500`, then `502` | **`201`**, consumer logs `ProductCreated consumed.` |
 | Schema registered by the native binary | never | yes — proven against an emptied registry |
 
@@ -319,3 +418,62 @@ correcting**. 2.15.0 does ship `net10.0` assets, and the count did fall by 96. B
 **no trim annotations whatsoever**: not one `[DynamicallyAccessedMembers]`, `[RequiresUnreferencedCode]` or
 `[RequiresDynamicCode]`. Retargeting a TFM is not annotating for trimming, and the remaining 43 will not
 clear themselves. Re-check the feed each time this is revisited rather than assuming either direction.
+
+---
+
+## Amendment 2: the publish is silent by default, and that is a NoWarn
+
+The section above argued against suppressing the last four, and the argument is left standing rather than
+rewritten, because it is the honest record of the trade. **The repository owner asked for a publish with
+no warnings, twice, after reading it.** That is their call to make, and this section records what was
+done and what it costs.
+
+### What changed
+
+`src/DemoProducts.Api/DemoProducts.Api.csproj` and `src/DemoProducts.Consumer/DemoProducts.Consumer.csproj`
+each carry a target that appends to `$(NoWarn)` immediately before ILC runs:
+
+| Project | Codes | Publish before | Publish now |
+| --- | --- | --- | --- |
+| Api | IL2026, IL2067, IL2075, IL2091 | 4 warnings | **0** |
+| Consumer (`PublishAot=true`) | the eight above plus IL2055, IL2057, IL2072, IL3050 | 60 warnings | **0** |
+
+So the claim "there is no `<NoWarn>` for an IL code anywhere in `src/**`", repeated several times above and
+in the README, **is no longer true**. It has been marked where it appears rather than deleted.
+
+### How it is scoped, and why that matters
+
+It is a `Target` with `BeforeTargets="WriteIlcRspFileForCompilation"`, not a `PropertyGroup`. A
+project-level `NoWarn` reaches the **C# compiler** as well, which would blind these two projects' own
+source to IL2026 and IL2075 — exactly the diagnostics `IsAotCompatible` exists to raise. Setting it inside
+the ILC step leaves the source-level analysers reporting them as errors, so the build gate is untouched:
+`dotnet build -c Release` is still 0 warnings, 0 errors, and a finding in our own code still fails it.
+
+The Consumer's target is additionally inert unless `PublishAot=true`, so the ordinary
+framework-dependent build never sees it.
+
+Both are one flag from full output:
+
+```bash
+dotnet publish ... -p:ShowThirdPartyTrimWarnings=true      # 4 for the Api, 60 for the Consumer
+```
+
+### What it costs, stated plainly
+
+**A NEW third-party diagnostic under one of these codes is now silent at publish.** IL2026 and IL3050 in
+particular are common; a future package upgrade that introduces a genuinely dangerous one will not
+announce itself. That is the whole of the objection in the section above, and adopting the suppression
+does not answer it — it accepts it.
+
+Three things reduce the exposure, and none of them removes it:
+
+1. The **build gate** still runs the trim, single-file and AOT analysers over every `src/**` project with
+   `TreatWarningsAsErrors`, so a finding in code this repository owns is an error, not a hidden line.
+2. The flag above makes the full list a single command away, and the two counts — **4** and **60** — are
+   written down here and in the README, so a drift is checkable rather than invisible.
+3. The four Api codes were each traced to a method before being listed, and the reachability of the two
+   AWS ones was argued from configuration: this service sets no `SaslMechanism`, so that path cannot run.
+
+What would make this properly safe is a CI step that publishes with `ShowThirdPartyTrimWarnings=true` and
+fails when the count differs from the recorded baseline. There is no CI in this repository yet, so that
+step does not exist, and its absence is the honest gap in this decision.

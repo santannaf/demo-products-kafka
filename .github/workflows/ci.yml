@@ -1,0 +1,203 @@
+# Three gates, in the order they are worth running: the fast one that protects developers, the slow one
+# that protects the release, and the one that is the only reason the other two are trustworthy.
+#
+# ADR 0001 records why the third exists. The build and publish gates were both green while the native
+# binary answered 500 and then 502, because neither of them runs the binary. Only a real request through
+# a real broker and a real Schema Registry found those.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: Build (warnings are errors, AOT analysers on) and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - run: dotnet restore DemoProducts.slnx
+
+      # Directory.Build.props sets IsAotCompatible and TreatWarningsAsErrors on every src/** project, so
+      # this step IS the source-level trim/AOT analyser gate. It is the one a developer without clang can
+      # still run, which is why it comes first.
+      - name: Build
+        run: dotnet build DemoProducts.slnx --no-restore -c Release
+
+      # global.json selects the Microsoft.Testing.Platform runner and the test project opts into the
+      # matching entry point. With only one of the two, this command reports "Zero tests ran" and exits
+      # non-zero, so a regression there fails here rather than passing quietly.
+      - name: Test
+        run: dotnet test --solution DemoProducts.slnx --no-build -c Release
+
+  native:
+    name: Native publish, warning baseline, and produce smoke
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # The native linker and compression library ILC needs. Deliberately installed here and in the
+      # Dockerfile only: `dotnet build` and `dotnet test` must stay enough on a developer machine.
+      - name: Install the native toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
+      - run: dotnet restore DemoProducts.slnx
+
+      # Two ILC runs per project, and the `rm -rf` between them is load-bearing rather than tidy.
+      # ILC is incremental: publishing the same project twice compiles once, and the second run prints
+      # nothing at all. Without the clean, the baseline below reads 0 and passes vacuously - which is
+      # exactly how this step failed the first time it was run.
+      - name: Native publish and ILC warning baseline
+        env:
+          # Recorded in docs/adr/0001-native-aot.md. A move in EITHER direction fails: upward means the
+          # suppression grew, downward means a dependency started annotating and the ADR is now stale.
+          API_BASELINE: 4
+          CONSUMER_BASELINE: 60
+        run: |
+          set -euo pipefail
+
+          publish () {
+            local project="$1" out="$2" log="$3"
+            shift 3
+            rm -rf "$(dirname "$project")/obj/Release/net10.0/linux-x64"
+
+            # No --no-restore here, unlike the build job: a RID-specific publish needs a
+            # net10.0/linux-x64 target in project.assets.json, and the plain restore above does not
+            # produce one. Passing --no-restore fails with NETSDK1047 on the first publish.
+            dotnet publish "$project" -c Release -r linux-x64 --self-contained true \
+              -o "$out" "$@" > "$log" 2>&1
+          }
+
+          check () {
+            local name="$1" project="$2" baseline="$3"
+            shift 3
+
+            # 1. The publish a developer actually runs. The promise is that it prints no ILC output.
+            publish "$project" "./publish/$name" "publish-$name.log" "$@"
+
+            if grep -q 'ILC :' "publish-$name.log"; then
+              echo "::error::The $name publish printed ILC diagnostics outside the suppressed set."
+              grep 'ILC :' "publish-$name.log"
+              exit 1
+            fi
+
+            # 2. The same publish with every diagnostic printed. This is what pays for the suppression.
+            publish "$project" "./publish/baseline-$name" "baseline-$name.log" \
+              -p:ShowThirdPartyTrimWarnings=true "$@"
+
+            local total ours
+            total=$(grep -c 'ILC :' "baseline-$name.log" || true)
+            ours=$(grep -cE 'warning IL[0-9]+: DemoProducts\.' "baseline-$name.log" || true)
+
+            echo "$name: $total ILC diagnostics (baseline $baseline), $ours from DemoProducts.*"
+
+            # The number that actually matters. Everything in the baseline is third-party reflection this
+            # repository cannot annotate; a diagnostic in DemoProducts.* means the ADR's premise broke.
+            if [ "$ours" -ne 0 ]; then
+              echo "::error::$name has $ours ILC diagnostics in this repository's own code."
+              grep -E 'warning IL[0-9]+: DemoProducts\.' "baseline-$name.log"
+              exit 1
+            fi
+
+            if [ "$total" -ne "$baseline" ]; then
+              echo "::error::$name ILC diagnostics moved from $baseline to $total. Read the list, then update the baseline here and in docs/adr/0001-native-aot.md."
+              grep 'ILC :' "baseline-$name.log" || true
+              exit 1
+            fi
+          }
+
+          check api "src/DemoProducts.Api/DemoProducts.Api.csproj" "$API_BASELINE"
+          check consumer "src/DemoProducts.Consumer/DemoProducts.Consumer.csproj" "$CONSUMER_BASELINE" \
+            -p:PublishAot=true
+
+      - name: Start Kafka, Schema Registry and Control Center
+        run: |
+          docker compose up -d --wait kafka schema-registry
+          curl --silent --fail --retry 20 --retry-delay 3 --retry-all-errors http://localhost:18081/subjects
+
+      # The gate ADR 0001 calls the one that is still owed, now owed no longer. It is the only step here
+      # that runs the native binaries, and it is what found both trimming defects the amendment records.
+      - name: Produce smoke on the native binaries
+        run: |
+          set -euo pipefail
+
+          ./publish/consumer/DemoProducts.Consumer > consumer.log 2>&1 &
+          consumer_pid=$!
+          ./publish/api/DemoProducts.Api > api.log 2>&1 &
+          api_pid=$!
+          trap 'kill $consumer_pid $api_pid 2>/dev/null || true' EXIT
+
+          # The consumer defaults to AutoOffsetReset=Latest, so it has to be subscribed BEFORE the
+          # message is produced or it starts past it and this step hangs for no real reason.
+          for _ in $(seq 1 40); do
+            grep -q 'Subscribed to topic' consumer.log && break
+            sleep 2
+          done
+          grep -q 'Subscribed to topic' consumer.log
+
+          for _ in $(seq 1 40); do
+            curl --silent --output /dev/null http://localhost:5080/products && break
+            sleep 2
+          done
+
+          status=$(curl --silent --output response.json --write-out '%{http_code}' \
+            -X POST http://localhost:5080/products \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"Café torrado"}')
+
+          echo "POST /products -> $status"
+          cat response.json
+
+          if [ "$status" != "201" ]; then
+            echo "::error::The native Api answered $status instead of 201."
+            cat api.log
+            exit 1
+          fi
+
+          # The accented name is not decoration: it is what proves the hand-written UTF-8 length prefix
+          # in AvroBinaryWriter agrees with what Avro's reader expects on the other side.
+          for _ in $(seq 1 20); do
+            grep -q 'ProductCreated consumed' consumer.log && break
+            sleep 1
+          done
+
+          if ! grep -q 'Name=Café torrado' consumer.log; then
+            echo "::error::The native Consumer did not consume the event."
+            cat consumer.log
+            exit 1
+          fi
+
+          echo "Published and consumed on the native binaries:"
+          grep 'ProductCreated published' api.log
+          grep 'ProductCreated consumed' consumer.log
+
+      - name: Collect the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            publish-*.log
+            baseline-*.log
+            api.log
+            consumer.log
+          if-no-files-found: ignore
