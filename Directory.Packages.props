@@ -6,10 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup Label="Kafka / Avro / Schema Registry">
-    <PackageVersion Include="Confluent.Kafka" Version="2.14.2" />
-    <PackageVersion Include="Confluent.SchemaRegistry" Version="2.14.2" />
-    <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.14.2" />
-    <PackageVersion Include="Apache.Avro" Version="1.12.1" />
+    <PackageVersion Include="Confluent.Kafka" Version="2.15.0" />
+    <PackageVersion Include="Confluent.SchemaRegistry" Version="2.15.0" />
+    <PackageVersion Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.15.0" />
+    <PackageVersion Include="Apache.Avro" Version="1.12.2" />
   </ItemGroup>
 
   <ItemGroup Label="Logging">
@@ -41,7 +41,7 @@
     <!--
       xUnit v3 test projects are executables carrying their own Microsoft.Testing.Platform runner.
       No Microsoft.NET.Test.Sdk and no VSTest adapter: .NET 10 dropped the VSTest path for dotnet test
-      (see dotnet.config at the repo root).
+      (global.json selects the runner; there is no dotnet.config here, and none is needed).
     -->
     <PackageVersion Include="xunit.v3" Version="4.0.0" />
     <PackageVersion Include="NSubstitute" Version="6.2.0" />

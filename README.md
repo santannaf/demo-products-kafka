@@ -37,12 +37,25 @@ Dependencies point inward: `Api`/`Consumer` → `Application`, `Infrastructure`;
 Three terminals.
 
 ```bash
-# 1. Kafka + Schema Registry (classic Zookeeper topology, Confluent Platform 7.7.x)
+# 1. Kafka + Schema Registry + Control Center (classic Zookeeper topology, Confluent Platform 7.7.x)
 docker compose up -d
 
 # ... or the Zookeeper-less KRaft variant, same published ports:
 # docker compose -f docker-compose.kraft.yml up -d
 ```
+
+| Service         | URL                      |
+|-----------------|--------------------------|
+| Kafka broker    | `localhost:9092`         |
+| Schema Registry | `http://localhost:18081` |
+| Control Center  | `http://localhost:9021`  |
+
+Schema Registry is published on `18081`, not the conventional `8081`, because that port is taken on the
+machine this sample is maintained on; inside the compose network it is still `8081`. Control Center is
+last to answer — it builds its own internal topics before serving `9021`. It runs in `management` mode: topic browser, message inspection (Avro decoded through Schema
+Registry), consumer groups and the schema view. The throughput/latency charts stay empty because
+neither `cp-kafka` nor `apache/kafka` ships the Confluent Metrics Reporter — that needs `cp-server`,
+which is more broker than this sample warrants.
 
 ```bash
 # 2. The consumer
@@ -72,9 +85,12 @@ printing
 Confirm the schema really went through Schema Registry (nothing on the wire is JSON):
 
 ```bash
-curl http://localhost:8081/subjects
-curl http://localhost:8081/subjects/product-created-value/versions/latest
+curl http://localhost:18081/subjects
+curl http://localhost:18081/subjects/product-created-value/versions/latest
 ```
+
+Or the same thing with a UI: <http://localhost:9021> → cluster → **Topics** → `product-created` →
+**Messages** for the decoded payloads, **Schema** for the registered Avro definition.
 
 `requests.http` has the same calls, including the `400` validation case.
 
@@ -87,9 +103,15 @@ curl http://localhost:8081/subjects/product-created-value/versions/latest
 dotnet test
 ```
 
-`global.json` opts into the Microsoft.Testing.Platform runner — .NET 10's `dotnet test` no longer drives
-VSTest, and xUnit v3 test projects carry their own runner. No broker, no container, no Docker: the suite
-is hermetic and runs in about a second.
+Two settings are needed, and missing either one is quiet rather than loud. `global.json` picks the runner
+on the `dotnet test` side (`"test": { "runner": "Microsoft.Testing.Platform" }`), and
+`<UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>` in the test csproj picks the
+matching entry point on the test app's side. With only the first, the executable keeps xUnit's own console
+runner, rejects the arguments `dotnet test` hands it, and the command reports **"Zero tests ran"** with no
+hint that 41 tests exist — while running the executable directly still passes. If `dotnet test` ever prints
+`total: 0`, check that property before believing the suite is empty.
+
+No broker, no container, no Docker: the suite is hermetic and runs in about a second.
 
 What is covered, and why each earns its place:
 
@@ -122,19 +144,26 @@ project, so this build **is** the source-level trim/AOT analyser gate. It curren
 ```bash
 dotnet publish src/DemoProducts.Api/DemoProducts.Api.csproj \
   -c Release -r linux-x64 --self-contained true -o ./publish/api
-# -> 139 ILC trim/AOT warnings, 0 errors
-# -> publish/api/DemoProducts.Api : ELF 64-bit pie executable, x86-64, stripped, ~22 MB
+# -> 43 ILC trim/AOT warnings, 0 errors
+# -> publish/api/DemoProducts.Api : ELF 64-bit pie executable, x86-64
 #    and no managed DemoProducts.Api.dll beside it - a genuine native image
 ```
 
-### About those 139 warnings
+### About those 43 warnings
 
 `Directory.Build.props` sets `TreatWarningsAsErrors=true`, which NativeAOT propagates into
-`IlcTreatWarningsAsErrors`. Left at that, the publish **fails**: ILC reports 139 trim/AOT diagnostics as
-errors and stops at "Generating native code". They come from **132 × `Newtonsoft.Json`** (a transitive
-dependency of `Apache.Avro 1.12.1`, used to parse the schema JSON), **5 × `Confluent.SchemaRegistry`** and
-**2 × `Confluent.Kafka`**. **None originate in `DemoProducts.*`**, and none are fixable from this
-repository — no package pin resolves them at these versions.
+`IlcTreatWarningsAsErrors`. Left at that, the publish **fails**: ILC reports the trim/AOT diagnostics as
+errors and stops at "Generating native code".
+
+They were **139** until `Confluent.*` was moved 2.14.2 → 2.15.0 and `Apache.Avro` 1.12.1 → 1.12.2. Those
+versions ship `net10.0` assets, and the count fell to **43**: 25 × `Confluent.SchemaRegistry`,
+10 × `Newtonsoft.Json`, 4 × `Confluent.Kafka`, 4 × `Avro`, and **0 from `DemoProducts.*`**. An earlier
+revision of this file claimed "none are fixable from this repository — no package pin resolves them at
+these versions"; a pin resolved 96 of them. Re-check the newest versions before repeating that claim.
+
+The remaining 43 will **not** clear on their own: `Confluent.Kafka 2.15.0`'s `net10.0` asset carries no
+trim annotations at all — not one `[DynamicallyAccessedMembers]`, `[RequiresUnreferencedCode]` or
+`[RequiresDynamicCode]` in the whole assembly. Retargeting a TFM is not the same as annotating for trimming.
 
 So `src/DemoProducts.Api/DemoProducts.Api.csproj` sets:
 
@@ -148,7 +177,7 @@ it before trusting the binary in anything that matters. What the flag does **not
 
 - it does not touch the C# compiler warnings — `dotnet build -c Release` is still **0 warnings, 0 errors**;
 - it does not hide anything: there is no `<NoWarn>` for an IL code, no `[UnconditionalSuppressMessage]`
-  and no `#pragma warning disable IL...` anywhere in `src/**`. All 139 still print, each naming its method;
+  and no `#pragma warning disable IL...` anywhere in `src/**`. All 43 still print, each naming its method;
 - it does not apply solution-wide — only the Api is AOT-published, so only the Api carries it.
 
 The number to watch is **0 diagnostics from `DemoProducts.*`**. A warning originating in this repository's
@@ -175,10 +204,22 @@ source-generated configuration binder bound the `Kafka` tree, the DI graph build
 `KafkaProducerOptionsValidator` runs. `docker run --rm -e Kafka__BootstrapServers= demo-products-api` shows the
 same from inside the image.
 
-It does **not** exercise the produce path — `_SCHEMA` initialises lazily on the first serialize. To close
-that last gap, run the *Smoke test* section above but start the Api as `./publish/api/DemoProducts.Api`
-instead of `dotnet run`: a `201` plus the `ProductCreated consumed.` line proves all three warning
-families at once, on the native image.
+It does **not** exercise the produce path — `_SCHEMA` initialises lazily on the first serialize. Run the
+*Smoke test* section above but start the Api as `./publish/api/DemoProducts.Api` instead of `dotnet run`:
+a `201` plus the `ProductCreated consumed.` line proves all three warning families at once, on the native
+image.
+
+**That smoke has now been run, and it failed twice before it passed.** Both failures were real trimming
+defects that the boot smoke and both static gates missed, and both are fixed:
+
+| Symptom on the native binary (CLR: `201`) | Cause | Fix |
+| --- | --- | --- |
+| `500` — `InvalidOperationException: Sequence contains no matching element` in `Librdkafka.SetDelegates` | it binds every librdkafka entry point via `GetRuntimeMethods().Single(...)`; ILC keeps the `NativeMethods` types but trims their P/Invoke members | three `[DynamicDependency]` roots in `Messaging/Kafka/DependencyInjection.cs` |
+| `502` — `Empty schema; error code: 42201` | `Confluent.SchemaRegistry` serialises its REST DTOs with Newtonsoft.Json; trimmed of their properties they serialise to `{}`. Captured through a logging proxy: the registration POST body was **2 bytes**, `{}` | `<TrimmerRootAssembly Include="Confluent.SchemaRegistry" />` in the Api csproj |
+
+Both roots were confirmed load-bearing by ablation: removing either one brings its failure straight back,
+on `Confluent.* 2.15.0` too. Neither is a suppression — they root the reflection so it finds what it looks
+for, and ILC verifies the type names (a typo would raise `IL2036`).
 
 Two things the planning notes got wrong, corrected by actually running the gate:
 

@@ -1,7 +1,11 @@
 # ADR 0001 — The Api is Native AOT, the Consumer is not
 
-**Status:** accepted
+**Status:** accepted, **amended** — see *Amendment: the produce smoke was run, and it failed*
 **Context:** `demo-products-kafka`, .NET 10 / C# 14
+
+> The amendment at the end of this file is not a footnote. Two of the reachability arguments below were
+> **wrong**, and the produce smoke this ADR listed as "still owed" is what proved it. Read the amendment
+> before relying on any per-family grade in the middle of this document.
 
 ## Context
 
@@ -56,8 +60,10 @@ warnings under .NET 10.
 | **Image** | `docker build -f Dockerfile.api -t demo-products-api .` | the same publish, pinned toolchain | **PASS** — same 139 warnings, image builds and boots |
 | **Boot** | the published native binary with an invalid `Kafka:BootstrapServers` | native runtime | **PASS** — see *What the boot smoke proves* |
 
-A fifth gate — a **produce** smoke against a real broker, on the native binary — has **not** been run.
-It is the one that would close the `Confluent.Kafka` family; see *The one smoke that is still owed*.
+| **Produce** | `POST /products` against a real broker, on the native binary | the produce path end to end | **PASS — only after two fixes.** Failed twice first; see the amendment |
+
+The produce gate was added after this ADR was first written. It found two real defects that the other
+four gates all missed.
 
 Two assumptions made while planning turned out to be wrong, and are corrected here rather than left in
 place:
@@ -87,12 +93,19 @@ publish stops at "Generating native code":
 By IL code: 41 × IL3050, 27 × IL2070, 18 × IL2075, 17 × IL2026, 8 × IL2067, 7 × IL2080, 7 × IL2046,
 4 × IL2055, 3 × IL2060, 3 × IL2057, 2 × IL2072, 1 × IL2091, 1 × IL2077.
 
-`Newtonsoft.Json` is not a direct dependency: `Apache.Avro 1.12.1` pulls it in and uses it to parse the
-schema JSON behind `Avro.Schema.Parse`, which the `_SCHEMA` static initialiser reaches.
+`Apache.Avro 1.12.1` pulls `Newtonsoft.Json` in and uses it to parse the schema JSON behind
+`Avro.Schema.Parse`, which the `_SCHEMA` static initialiser reaches.
 
-**None of these are fixable from this repository.** They are unannotated reflection inside third-party
-assemblies whose newest assets predate `net10.0`, and no package pin resolves them at these versions —
-which is the one mitigation this ADR would otherwise prefer.
+> **Amended.** This paragraph originally read "`Newtonsoft.Json` is not a direct dependency". It is one:
+> `Confluent.SchemaRegistry`'s own `.nuspec` declares `Newtonsoft.Json` in every target framework group,
+> and its REST client serialises every request and response DTO with it. That omission is exactly what
+> made the reachability argument below wrong.
+
+> **Amended.** The next paragraph originally read "**None of these are fixable from this repository** …
+> no package pin resolves them at these versions". A pin resolved 96 of the 139: moving `Confluent.*` to
+> 2.15.0 and `Apache.Avro` to 1.12.2 — versions that ship `net10.0` assets — drops the count to **43**
+> (25 `Confluent.SchemaRegistry`, 10 `Newtonsoft.Json`, 4 `Confluent.Kafka`, 4 `Avro`, 0 `DemoProducts.*`).
+> The claim was made without checking the feed. The rest of the paragraph still holds for those 43.
 
 ## The decision on the conflict: option A, adopted
 
@@ -135,7 +148,7 @@ What it does **not** do, deliberately:
 
 Option A owes an argument for each family. Here it is, honestly graded.
 
-**`Newtonsoft.Json` — 132 warnings. Argued sound.**
+**`Newtonsoft.Json` — 132 warnings. Argued sound. — REFUTED, see the amendment.**
 Reached only through `Avro.Schema.Parse`, called from the `ProductCreatedAvro._SCHEMA` static
 initialiser. The only JSON this application ever hands to Newtonsoft is the schema literal compiled into
 `ProductCreatedAvro.cs`: one flat record, four primitive fields, no nested records, unions, enums or
@@ -155,7 +168,7 @@ reflection that `[DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(P
 `GetInterfaces` (IL2075) run the schema-*references* and field-rule transform. `product-created.avsc` is
 a single self-contained record with neither references nor rules, so that path is never entered.
 
-**`Confluent.Kafka` — 2 warnings. The residual risk. Not closed by static argument.**
+**`Confluent.Kafka` — 2 warnings. The residual risk. Not closed by static argument. — CONFIRMED as a real defect, now rooted; see the amendment.**
 `Librdkafka.SetDelegates` → `GetRuntimeMethods` (IL2070) and `Marshal.PtrToStructure<T>` (IL3050) are the
 P/Invoke binding to `librdkafka.so`. The `NativeMethods` type reaches `SetDelegates` as a `typeof(...)`
 literal, so ILC roots the *type* — but `GetRuntimeMethods()` enumerating a type whose unused methods were
@@ -192,7 +205,7 @@ It does **not** prove the produce path. `_SCHEMA` initialises lazily on the firs
 `KafkaConnection` is constructed on the first request, so neither the `Newtonsoft.Json` nor the
 `Confluent.Kafka` family is exercised by a boot that never serves a request.
 
-### The one smoke that is still owed
+### The one smoke that was owed — now run
 
 ```bash
 docker compose up -d
@@ -221,3 +234,88 @@ runs it against the native binary, the `Confluent.Kafka` family stays argued rat
   from three known third-party assemblies and **0 from `DemoProducts.*`**. A diagnostic originating in
   `DemoProducts.*` means this ADR's premise no longer holds and must be amended, not tolerated.
 - The Consumer stays off AOT entirely, which is what makes the producer/consumer DI split worth keeping.
+
+---
+
+## Amendment: the produce smoke was run, and it failed
+
+The smoke above was run against the native binary, a real broker and a real Schema Registry. It returned
+`500`, then — once that was fixed — `502`. Both were genuine trimming defects. The **build**, **publish**,
+**image** and **boot** gates were all green while both were present, which is the point worth carrying
+away: *none of the four static gates can see them.*
+
+### Defect 1 — `Confluent.Kafka`: the residual risk was real
+
+```
+System.InvalidOperationException: Sequence contains no matching element
+   at System.Linq.Enumerable.Single[TSource](IEnumerable`1, Func`2)
+   at Confluent.Kafka.Impl.Librdkafka.SetDelegates(Type)
+   at Confluent.Kafka.Impl.Librdkafka.LoadLinuxDelegates(String)
+   at Confluent.Kafka.Producer`2..ctor(ProducerBuilder`2)
+```
+
+`SetDelegates` binds every librdkafka entry point with
+`nativeMethodsClass.GetRuntimeMethods().Single(m => m.Name == ...)`. ILC roots the `NativeMethods` *types*
+— they reach `SetDelegates` as `typeof` literals, which is what the original grade relied on — but nothing
+statically references their P/Invoke *members*, so `TrimMode=full` removes them and the first `Single(...)`
+throws. The grade above said the `typeof` argument "does not rule that out". It was right to hedge.
+
+**Fix:** three `[DynamicDependency]` roots on `AddKafkaProducer`, one per candidate class
+(`NativeMethods`, `NativeMethods_Centos8`, `NativeMethods_Alpine` — `LoadLinuxDelegates` tries each in turn
+to match the librdkafka build in the image). ILC resolves the type names and would raise `IL2036` on a typo.
+
+### Defect 2 — `Newtonsoft.Json`: the reachability argument was wrong
+
+```
+Confluent.SchemaRegistry.SchemaRegistryException: Empty schema; error code: 42201
+   at Confluent.SchemaRegistry.RestService.RegisterSchemaWithResponseAsync(...)
+   at Confluent.SchemaRegistry.Serdes.SpecificSerializerImpl`1.Serialize(...)
+```
+
+The argument was: "the only JSON this application ever hands to Newtonsoft is the schema literal compiled
+into `ProductCreatedAvro.cs`". False. `Confluent.SchemaRegistry` depends on `Newtonsoft.Json` **directly**
+and serialises every REST DTO with it. Trimmed of their properties, those DTOs serialise to nothing.
+
+Captured by putting a logging proxy between the binary and the registry — the registration body was
+**2 bytes**:
+
+```
+>>> POST /subjects/product-created-value/versions?normalize=False
+>>> body (2 bytes): b'{}'
+<<< 42201 Empty schema
+```
+
+and after the fix, 446 bytes carrying the full Avro schema.
+
+**Fix:** `<TrimmerRootAssembly Include="Confluent.SchemaRegistry" />` on the Api project. Deliberately
+blunt: the DTO set is internal to the package and shifts between versions, so enumerating types would be a
+list that silently rots.
+
+### Both roots are load-bearing, and neither is a suppression
+
+Verified by ablation on `Confluent.* 2.15.0`: remove the `[DynamicDependency]` roots and the `500` returns;
+remove the `TrimmerRootAssembly` and the `502` returns. There are still zero `<NoWarn>` entries for an IL
+code, zero `[UnconditionalSuppressMessage]` and zero `#pragma warning disable IL...` in `src/**`. A root
+makes the reflection *find what it looks for*; a suppression only stops the compiler mentioning it.
+
+### What this changes about the gates
+
+The four original gates are necessary and jointly insufficient. **A green publish says the code is
+analysable, not that the binary works.** Only an end-to-end request through the real dependencies exercises
+the reflection that trimming broke — and here it took the real Schema Registry, not a stub, because the
+symptom was a well-formed HTTP call with an empty body.
+
+### Result after this amendment
+
+| | Before | After |
+| --- | --- | --- |
+| ILC warnings | 139 | **43** (0 from `DemoProducts.*`) |
+| `POST /products` on the native binary | `500`, then `502` | **`201`**, consumer logs `ProductCreated consumed.` |
+| Schema registered by the native binary | never | yes — proven against an emptied registry |
+
+The expectation recorded in *Consequences* — that the warnings "should shrink to zero on their own when
+`Apache.Avro` and `Confluent.*` ship `net10.0` assets with trim annotations" — is **half right and worth
+correcting**. 2.15.0 does ship `net10.0` assets, and the count did fall by 96. But that assembly contains
+**no trim annotations whatsoever**: not one `[DynamicallyAccessedMembers]`, `[RequiresUnreferencedCode]` or
+`[RequiresDynamicCode]`. Retargeting a TFM is not annotating for trimming, and the remaining 43 will not
+clear themselves. Re-check the feed each time this is revisited rather than assuming either direction.

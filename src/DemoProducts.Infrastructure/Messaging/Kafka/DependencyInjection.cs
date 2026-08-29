@@ -19,11 +19,39 @@ namespace DemoProducts.Infrastructure.Messaging.Kafka;
 public static class DependencyInjection
 {
     /// <remarks>
+    /// <para>
     /// Confluent's SpecificSerializerImpl&lt;T&gt; reads the <c>_SCHEMA</c> static field of the record
     /// type reflectively, so trimming could remove it. Rooting it here makes the trim warning FALSE
     /// rather than hidden — the sanctioned alternative to a suppression.
+    /// </para>
+    /// <para>
+    /// The three <c>NativeMethods</c> roots below are the same remedy for a second, fatal reflection
+    /// point. <c>Librdkafka.SetDelegates(Type)</c> binds every librdkafka entry point by enumerating
+    /// <c>GetRuntimeMethods()</c> over one of these classes and calling <c>.Single(m =&gt; m.Name ==
+    /// ...)</c> per delegate. ILC roots the TYPES — they reach <c>SetDelegates</c> as <c>typeof</c>
+    /// literals — but nothing references their P/Invoke members, so full trimming removes them and the
+    /// first <c>.Single(...)</c> throws <c>Sequence contains no matching element</c> while constructing
+    /// the producer. That is the IL2070 the publish reports against <c>SetDelegates</c>, and it is why
+    /// ADR 0001 graded the <c>Confluent.Kafka</c> family as residual risk rather than argued sound.
+    /// Confluent.Kafka carries no trim annotations of its own — not even in the net10.0 asset added in
+    /// 2.15.0 — so the root has to come from here. All three candidates are rooted because
+    /// <c>LoadLinuxDelegates</c> tries them in turn to find the one whose <c>DllImport</c> name matches
+    /// the librdkafka build present in the image.
+    /// </para>
     /// </remarks>
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ProductCreatedAvro))]
+    [DynamicDependency(
+        DynamicallyAccessedMemberTypes.All,
+        "Confluent.Kafka.Impl.NativeMethods.NativeMethods",
+        "Confluent.Kafka")]
+    [DynamicDependency(
+        DynamicallyAccessedMemberTypes.All,
+        "Confluent.Kafka.Impl.NativeMethods.NativeMethods_Centos8",
+        "Confluent.Kafka")]
+    [DynamicDependency(
+        DynamicallyAccessedMemberTypes.All,
+        "Confluent.Kafka.Impl.NativeMethods.NativeMethods_Alpine",
+        "Confluent.Kafka")]
     public static IServiceCollection AddKafkaProducer(
         this IServiceCollection services,
         IConfiguration configuration)
