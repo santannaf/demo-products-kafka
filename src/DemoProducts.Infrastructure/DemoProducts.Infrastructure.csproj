@@ -23,9 +23,17 @@
     <PackageReference Include="Serilog.Sinks.Console" />
   </ItemGroup>
 
-  <!-- The .avsc is the canonical schema; shipped alongside the code so it is reviewable next to it. -->
+  <!--
+    The .avsc is the canonical schema, shipped alongside the code so it is reviewable next to it, and
+    embedded so the producing side can register the SAME file the code generator consumes. A string
+    constant would be a second copy that nothing compares against the first.
+
+    LogicalName is pinned rather than left to the default, which derives from the directory path: moving
+    the file would otherwise rename the resource and break the lookup at runtime instead of at build.
+  -->
   <ItemGroup>
-    <None Include="Messaging\Kafka\Avro\Schemas\product-created.avsc" />
+    <EmbeddedResource Include="Messaging\Kafka\Avro\Schemas\product-created.avsc"
+                      LogicalName="DemoProducts.Infrastructure.Avro.product-created.avsc" />
   </ItemGroup>
 
   <Import Project="Messaging\Kafka\Avro\Avro.targets" />

@@ -22,7 +22,13 @@ internal sealed class KafkaProducerOptionsValidator : IValidateOptions<KafkaProd
         OptionsValidation.RequireValue(failures, options.Topics.ProductCreated, "Kafka:Topics:ProductCreated");
 
         OptionsValidation.RequireEnum<Acks>(failures, options.Producer.Acks, "Kafka:Producer:Acks");
+        OptionsValidation.RequireEnum<CompressionType>(
+            failures, options.Producer.CompressionType, "Kafka:Producer:CompressionType");
+        OptionsValidation.RequireEnum<Partitioner>(
+            failures, options.Producer.Partitioner, "Kafka:Producer:Partitioner");
+
         OptionsValidation.RequirePositive(failures, options.Producer.MessageTimeoutMs, "Kafka:Producer:MessageTimeoutMs");
+        OptionsValidation.RequirePositive(failures, options.Producer.MaxRetries, "Kafka:Producer:MaxRetries");
 
         return failures.Count == 0
             ? ValidateOptionsResult.Success

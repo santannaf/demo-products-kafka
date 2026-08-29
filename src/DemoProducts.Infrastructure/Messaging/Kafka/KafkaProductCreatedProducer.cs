@@ -1,10 +1,9 @@
 using Confluent.Kafka;
-using Confluent.SchemaRegistry;
-using Confluent.SchemaRegistry.Serdes;
 using DemoProducts.Application.Abstractions.Messaging;
 using DemoProducts.Domain.Events;
-using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Generated;
-using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Mappers;
+using DemoProducts.Infrastructure.Messaging.Kafka.SchemaRegistry;
+using DemoProducts.Infrastructure.Messaging.Kafka.Wire;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace DemoProducts.Infrastructure.Messaging.Kafka;
@@ -15,24 +14,40 @@ namespace DemoProducts.Infrastructure.Messaging.Kafka;
 /// as a singleton and flushed on dispose.
 /// </summary>
 /// <remarks>
-/// The producer is built here rather than handed in: exposing an <c>IProducer&lt;string,
-/// ProductCreatedAvro&gt;</c> would put the whole Confluent surface, and the generated Avro record, into
-/// this module's interface. Callers see <see cref="SendAsync"/> and nothing else.
+/// <para>
+/// The producer is built here rather than handed in: exposing an <c>IProducer&lt;string, byte[]&gt;</c>
+/// would put the whole Confluent surface into this module's interface. Callers see
+/// <see cref="SendAsync"/> and nothing else.
+/// </para>
+/// <para>
+/// The value type is <c>byte[]</c> and the Avro encoding happens in
+/// <see cref="ProductCreatedAvroEncoder"/> rather than in a <c>Confluent.SchemaRegistry.Serdes</c>
+/// serializer. That is the whole point: Confluent's Avro serde reaches both Newtonsoft.Json and Avro's
+/// reflective schema parser, which together produced 34 of the Api's 43 ILC trim warnings. The consuming
+/// side still uses the Confluent serde — it runs on the CLR, where none of that is a problem, and it
+/// needs schema-by-id resolution this direction does not.
+/// </para>
 /// </remarks>
-internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProvider, IDisposable
+internal sealed partial class KafkaProductCreatedProducer : ISendProductCreatedEventProvider, IDisposable
 {
     private static readonly TimeSpan FlushTimeout = TimeSpan.FromSeconds(10);
 
-    private readonly IProducer<string, ProductCreatedAvro> producer;
+    private readonly IProducer<string, byte[]> producer;
+    private readonly ProductCreatedSchemaId schemaId;
+    private readonly ILogger<KafkaProductCreatedProducer> logger;
     private readonly string topic;
     private bool disposed;
 
     public KafkaProductCreatedProducer(
         IOptions<KafkaProducerOptions> options,
-        ISchemaRegistryClient schemaRegistryClient)
+        ProductCreatedSchemaId schemaId,
+        ILogger<KafkaProductCreatedProducer> logger)
     {
         ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(schemaRegistryClient);
+        ArgumentNullException.ThrowIfNull(schemaId);
+
+        this.schemaId = schemaId;
+        this.logger = logger;
 
         var kafka = options.Value;
         topic = kafka.Topics.ProductCreated;
@@ -44,16 +59,12 @@ internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProv
             Acks = Enum.Parse<Acks>(kafka.Producer.Acks, ignoreCase: true),
             EnableIdempotence = kafka.Producer.EnableIdempotence,
             MessageTimeoutMs = kafka.Producer.MessageTimeoutMs,
+            MessageSendMaxRetries = kafka.Producer.MaxRetries,
+            CompressionType = Enum.Parse<CompressionType>(kafka.Producer.CompressionType, ignoreCase: true),
+            Partitioner = Enum.Parse<Partitioner>(kafka.Producer.Partitioner, ignoreCase: true),
         };
 
-        var serializerConfig = new AvroSerializerConfig
-        {
-            AutoRegisterSchemas = kafka.SchemaRegistry.AutoRegisterSchemas,
-        };
-
-        producer = new ProducerBuilder<string, ProductCreatedAvro>(producerConfig)
-            .SetValueSerializer(new AvroSerializer<ProductCreatedAvro>(schemaRegistryClient, serializerConfig))
-            .Build();
+        producer = new ProducerBuilder<string, byte[]>(producerConfig).Build();
     }
 
     public async Task SendAsync(
@@ -62,15 +73,45 @@ internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProv
     {
         ArgumentNullException.ThrowIfNull(productCreatedEvent);
 
-        var message = new Message<string, ProductCreatedAvro>
+        int resolvedSchemaId;
+
+        try
+        {
+            resolvedSchemaId = await schemaId.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (SchemaRegistryUnavailableException exception)
+        {
+            throw new EventPublishFailedException(
+                $"Failed to register or resolve the Avro schema for topic '{topic}': {exception.Message}",
+                exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new EventPublishFailedException(
+                $"Failed to reach the Schema Registry while publishing to topic '{topic}': {exception.Message}",
+                exception);
+        }
+
+        var message = new Message<string, byte[]>
         {
             Key = productCreatedEvent.ProductId.ToString(),
-            Value = ProductCreatedAvroMapper.ToAvro(productCreatedEvent),
+            Value = ProductCreatedAvroEncoder.Encode(productCreatedEvent, resolvedSchemaId),
         };
 
         try
         {
-            await producer.ProduceAsync(topic, message, cancellationToken).ConfigureAwait(false);
+            var delivery = await producer.ProduceAsync(topic, message, cancellationToken).ConfigureAwait(false);
+
+            // Logged after the await, so the line means the broker acknowledged it under the configured
+            // Acks - not that a message was handed to librdkafka's queue.
+            LogPublished(
+                logger,
+                productCreatedEvent.EventId,
+                productCreatedEvent.ProductId,
+                productCreatedEvent.Name,
+                delivery.Topic,
+                delivery.Partition.Value,
+                delivery.Offset.Value);
         }
         catch (KafkaException exception)
         {
@@ -80,13 +121,22 @@ internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProv
                 $"Failed to publish ProductCreated to topic '{topic}': {exception.Error.Reason}",
                 exception);
         }
-        catch (SchemaRegistryException exception)
-        {
-            throw new EventPublishFailedException(
-                $"Failed to register or resolve the Avro schema for topic '{topic}': {exception.Message}",
-                exception);
-        }
     }
+
+    // DomainEventId rather than EventId: see ProductCreatedEventHandler for why the reserved name cannot
+    // be used here. The two lines share the placeholder so one event id correlates publish with consume.
+    [LoggerMessage(
+        EventId = 2002,
+        Level = LogLevel.Information,
+        Message = "ProductCreated published. DomainEventId={DomainEventId} ProductId={ProductId} Name={Name} Topic={Topic} Partition={Partition} Offset={Offset}")]
+    private static partial void LogPublished(
+        ILogger logger,
+        Guid domainEventId,
+        Guid productId,
+        string name,
+        string topic,
+        int partition,
+        long offset);
 
     public void Dispose()
     {
@@ -95,8 +145,7 @@ internal sealed class KafkaProductCreatedProducer : ISendProductCreatedEventProv
             return;
         }
 
-        // Flush before disposing so messages still in flight at shutdown are not dropped. The schema
-        // registry client is not disposed here: the container owns it.
+        // Flushing before disposing is what makes an in-flight message survive shutdown.
         producer.Flush(FlushTimeout);
         producer.Dispose();
 

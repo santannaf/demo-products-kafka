@@ -54,6 +54,102 @@ public sealed class KafkaOptionsValidatorTests
         ValidateConsumer(ValidConsumerOptions()).Succeeded.Should().BeTrue();
 
     [Fact]
+    public void An_unsupported_compression_type_is_rejected_and_lists_the_legal_values()
+    {
+        var options = ValidProducerOptions();
+        options.Producer.CompressionType = "brotli";
+
+        var result = ValidateProducer(options);
+
+        // The legal values are in the message because the caller cannot see Confluent's enum from a
+        // configuration file, and "unsupported value" alone would send them to the source.
+        result.Failures.Should().ContainMatch("*Kafka:Producer:CompressionType*brotli*Snappy*");
+    }
+
+    [Fact]
+    public void An_unsupported_partitioner_is_rejected_naming_the_key()
+    {
+        // The name a reader arriving from the Java client would reach for. There is no librdkafka
+        // equivalent, so the boot has to say so rather than fall back to a default.
+        var options = ValidProducerOptions();
+        options.Producer.Partitioner = "UniformStickyPartitioner";
+
+        var result = ValidateProducer(options);
+
+        result.Failures.Should().ContainMatch("*Kafka:Producer:Partitioner*ConsistentRandom*");
+    }
+
+    [Fact]
+    public void A_producer_retry_count_below_one_is_rejected_naming_the_key()
+    {
+        var options = ValidProducerOptions();
+        options.Producer.MaxRetries = 0;
+
+        ValidateProducer(options).Failures.Should().ContainMatch("*Kafka:Producer:MaxRetries*");
+    }
+
+    [Fact]
+    public void An_attempt_cap_below_one_is_rejected_naming_the_key()
+    {
+        // Zero would mean "hand the record to nobody and commit past it", which reads as a typo rather
+        // than an intention. The boot says so instead of silently dropping the topic.
+        var options = ValidConsumerOptions();
+        options.Consumer.MaxAttemptsPerRecord = 0;
+
+        ValidateConsumer(options).Failures.Should().ContainMatch("*Kafka:Consumer:MaxAttemptsPerRecord*");
+    }
+
+    [Fact]
+    public void An_asynchronous_ack_is_rejected_naming_the_key()
+    {
+        var options = ValidConsumerOptions();
+        options.Consumer.AsyncAck = true;
+
+        ValidateConsumer(options).Failures.Should().ContainMatch("*Kafka:Consumer:AsyncAck*");
+    }
+
+    [Fact]
+    public void A_batch_listener_is_rejected_naming_the_key()
+    {
+        var options = ValidConsumerOptions();
+        options.Consumer.EnableBatchListener = true;
+
+        ValidateConsumer(options).Failures.Should().ContainMatch("*Kafka:Consumer:EnableBatchListener*");
+    }
+
+    [Fact]
+    public void A_fetch_that_may_outlast_the_poll_deadline_is_rejected()
+    {
+        // Both values are individually legal: a 5 minute poll deadline and a 5 minute fetch wait. Together
+        // they starve the poll loop into a rebalance while the consumer is perfectly healthy, which is the
+        // kind of pairing no single-field rule can see.
+        var options = ValidConsumerOptions();
+        options.Consumer.MaxPollIntervalMs = 300_000;
+        options.Consumer.FetchWaitMaxMs = 300_000;
+
+        var result = ValidateConsumer(options);
+
+        result.Failures.Should().ContainMatch("*Kafka:Consumer:FetchWaitMaxMs*Kafka:Consumer:MaxPollIntervalMs*");
+    }
+
+    [Fact]
+    public void The_settings_that_bound_a_poll_are_all_rejected_when_not_positive()
+    {
+        var options = ValidConsumerOptions();
+        options.Consumer.MaxPollRecords = 0;
+        options.Consumer.FetchMinBytes = 0;
+        options.Consumer.FetchWaitMaxMs = 0;
+
+        var result = ValidateConsumer(options);
+
+        // Reported together rather than one boot at a time: the validator collects, and a restart per
+        // typo is what asserting only the first one would buy.
+        result.Failures.Should().ContainMatch("*Kafka:Consumer:MaxPollRecords*");
+        result.Failures.Should().ContainMatch("*Kafka:Consumer:FetchMinBytes*");
+        result.Failures.Should().ContainMatch("*Kafka:Consumer:FetchWaitMaxMs*");
+    }
+
+    [Fact]
     public void The_Api_boots_from_a_configuration_with_no_consumer_section()
     {
         // The point of the split. Before it, the Api refused to start without a group id it never reads.

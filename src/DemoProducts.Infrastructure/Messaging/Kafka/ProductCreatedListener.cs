@@ -26,7 +26,7 @@ internal sealed class ProductCreatedListener(
 
     private void Consume(CancellationToken stoppingToken)
     {
-        using var subscription = new KafkaProductCreatedSubscription(
+        using var subscription = ProductCreatedSubscriptionFactory.Create(
             options.Value,
             schemaRegistryClient,
             logger);

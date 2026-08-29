@@ -12,8 +12,12 @@ namespace DemoProducts.UnitTests.Infrastructure.Delivery;
 /// </summary>
 public sealed class AtLeastOnceDeliveryTests
 {
-    private static AtLeastOnceDelivery Delivery() =>
-        new(NullLogger<AtLeastOnceDelivery>.Instance);
+    /// <param name="maxAttemptsPerRecord">
+    /// Defaults high so the tests written before the cap existed still describe the same protocol: with a
+    /// budget no test exhausts, the give-up branch is never reached and a failure always rewinds.
+    /// </param>
+    private static AtLeastOnceDelivery Delivery(int maxAttemptsPerRecord = int.MaxValue) =>
+        new(NullLogger<AtLeastOnceDelivery>.Instance, maxAttemptsPerRecord);
 
     private static void Succeeds(ProductCreatedEvent productCreatedEvent, CancellationToken cancellationToken)
     {
@@ -164,6 +168,57 @@ public sealed class AtLeastOnceDeliveryTests
         subscription.SoughtBack.Should().BeEmpty();
         subscription.Committed.Should().BeEmpty();
         subscription.Pauses.Should().Be(0);
+    }
+
+    [Fact]
+    public void A_record_that_keeps_failing_is_dropped_once_the_attempt_cap_is_reached()
+    {
+        var message = FakeProductCreatedSubscription.Message();
+        using var subscription = new FakeProductCreatedSubscription(message, message);
+
+        Delivery(maxAttemptsPerRecord: 2).Run(subscription, Fails, subscription.Token);
+
+        // Committed WITHOUT the handler ever succeeding: this is the give-up branch, and the commit is
+        // what drops the record. Asserting it is how the trade stays visible instead of implied.
+        subscription.Committed.Should().ContainSingle().Which.Should().BeSameAs(message);
+        subscription.SoughtBack.Should().ContainSingle("the cap is reached on the second attempt, so only the first rewinds");
+    }
+
+    [Fact]
+    public void The_attempt_budget_is_per_record_and_not_shared_across_records()
+    {
+        var first = FakeProductCreatedSubscription.Message("Primeiro", offset: 0);
+        var second = FakeProductCreatedSubscription.Message("Segundo", offset: 1);
+        using var subscription = new FakeProductCreatedSubscription(first, first, second, second);
+
+        Delivery(maxAttemptsPerRecord: 2).Run(subscription, Fails, subscription.Token);
+
+        // Without a per-position reset the second record would inherit an exhausted budget and be dropped
+        // on its FIRST failure, never rewinding.
+        subscription.Committed.Should().Equal(first, second);
+        subscription.SoughtBack.Should().Equal(first, second);
+    }
+
+    [Fact]
+    public void A_record_that_succeeds_on_a_later_attempt_is_committed_normally()
+    {
+        var message = FakeProductCreatedSubscription.Message();
+        using var subscription = new FakeProductCreatedSubscription(message, message);
+        var attempts = 0;
+
+        void FailsOnce(ProductCreatedEvent productCreatedEvent, CancellationToken cancellationToken)
+        {
+            if (++attempts == 1)
+            {
+                throw new InvalidOperationException("handler blew up");
+            }
+        }
+
+        Delivery(maxAttemptsPerRecord: 2).Run(subscription, FailsOnce, subscription.Token);
+
+        attempts.Should().Be(2);
+        subscription.Committed.Should().ContainSingle().Which.Should().BeSameAs(message);
+        subscription.SoughtBack.Should().ContainSingle();
     }
 
     [Fact]

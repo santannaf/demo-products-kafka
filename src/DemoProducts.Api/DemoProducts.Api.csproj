@@ -13,18 +13,21 @@
 
     <!--
       ADR 0001, option A. TreatWarningsAsErrors=true (Directory.Build.props) propagates into ILC, which
-      then reports 139 trim/AOT diagnostics as ERRORS and stops the publish. Every one of them comes from
-      a third-party assembly whose newest asset predates net10.0 - Newtonsoft.Json (via Apache.Avro),
-      Confluent.SchemaRegistry, Confluent.Kafka - and NONE from DemoProducts.*; no pin resolves them at
-      these versions.
+      then reports the trim/AOT diagnostics as ERRORS and stops the publish.
+
+      There were 139 of them. A package pin took it to 43, and moving the producing side off Confluent's
+      Avro serde - and therefore off Newtonsoft.Json - took it to 4. All 4 are Confluent.Kafka:
+      Librdkafka.SetDelegates (rooted from AddKafkaProducer), Marshal.PtrToStructure<T>, and two on the
+      AWS OAuth wiring this application never configures. NONE come from DemoProducts.*, and none clear
+      on their own: Confluent.Kafka 2.15.0's net10.0 asset carries no trim annotations at all.
 
       The demotion is scoped as narrowly as the tooling allows: this property, this project. It does NOT
       touch the C# compiler warnings, which stay errors, and it adds no <NoWarn> and no
       [UnconditionalSuppressMessage] - the diagnostics are still printed, counted and reviewable.
 
       It lives here rather than on the publish command line so that the Dockerfile, the README command
-      and CI all get the same result from one source of truth. ADR 0001 carries the per-family
-      reachability argument and the residual risk.
+      and CI all get the same result from one source of truth. ADR 0001 carries the per-family argument,
+      the two trimming defects the produce smoke found, and what replaced the Newtonsoft edges.
     -->
     <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
 
@@ -33,20 +36,37 @@
   </PropertyGroup>
 
   <!--
-    Confluent.SchemaRegistry's REST client serialises its own request and response DTOs with
-    Newtonsoft.Json, which binds by reflection over property names. Under TrimMode=full nothing
-    statically references those properties, ILC removes them, and JsonConvert.SerializeObject emits an
-    empty object: the native binary POSTed a literal `{}` (2 bytes) to
-    /subjects/product-created-value/versions and the registry answered `Empty schema; error code:
-    42201`. On the CLR the same code returns 201, so the gap only exists on the published binary.
+    Makes `dotnet publish` clean. ILC forwards $(NoWarn) into its own nowarn argument, so setting it
+    here silences the four diagnostics ADR 0001 records as terminal. All four are inside
+    Confluent.Kafka, none is fixable from this repository, and none comes from DemoProducts.*:
 
-    Rooting the assembly keeps those members. It is deliberately blunt: the DTO set is internal to the
-    package and changes between versions, so naming each type would be a list that silently rots. This
-    is a root, not a suppression - the reflection now finds what it looks for.
+        IL2067  Librdkafka.SetDelegates                     rooted from AddKafkaProducer, proven by
+                                                            ablation, so the behaviour is correct
+        IL2091  Marshal.PtrToStructure of T                 P/Invoke struct marshalling
+        IL2026  AwsAutoWireDispatcher.ResolveCreateHandler  AWS OAuth wiring; this service sets no
+        IL2075  AwsAutoWireDispatcher.ResolveCreateHandler  SaslMechanism, so it cannot execute
+
+    Scoped to a TARGET that runs before ILC rather than to a PropertyGroup, on purpose: a project-level
+    NoWarn element would also reach the C# compiler and blind this project's own source to IL2026 and
+    IL2075. Set inside the ILC step, the source-level analysers keep reporting those as errors, which is
+    where OUR code is meant to be caught.
+
+    One flag brings all four back, which is what keeps this honest rather than hidden:
+
+        dotnet publish ... -p:ShowThirdPartyTrimWarnings=true
+
+    The cost is real: a NEW diagnostic under one of these four codes is now silent at publish. The build
+    gate is what pays for it. IsAotCompatible plus TreatWarningsAsErrors run the same analysers over
+    every src/** project, where a finding is an error rather than a line in a log. Read ADR 0001 before
+    widening this list.
   -->
-  <ItemGroup>
-    <TrimmerRootAssembly Include="Confluent.SchemaRegistry" />
-  </ItemGroup>
+  <Target Name="SilenceTerminalThirdPartyIlcWarnings"
+          BeforeTargets="WriteIlcRspFileForCompilation"
+          Condition="'$(ShowThirdPartyTrimWarnings)' != 'true'">
+    <PropertyGroup>
+      <NoWarn>$(NoWarn);IL2026;IL2067;IL2075;IL2091</NoWarn>
+    </PropertyGroup>
+  </Target>
 
   <ItemGroup>
     <ProjectReference Include="..\DemoProducts.Application\DemoProducts.Application.csproj" />

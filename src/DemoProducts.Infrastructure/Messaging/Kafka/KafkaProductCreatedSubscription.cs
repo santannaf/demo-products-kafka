@@ -1,10 +1,6 @@
 using Confluent.Kafka;
-using Confluent.Kafka.SyncOverAsync;
-using Confluent.SchemaRegistry;
-using Confluent.SchemaRegistry.Serdes;
+using DemoProducts.Domain.Events;
 using DemoProducts.Infrastructure.Messaging.Delivery;
-using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Generated;
-using DemoProducts.Infrastructure.Messaging.Kafka.Avro.Mappers;
 using Microsoft.Extensions.Logging;
 
 namespace DemoProducts.Infrastructure.Messaging.Kafka;
@@ -13,38 +9,50 @@ namespace DemoProducts.Infrastructure.Messaging.Kafka;
 /// The Kafka adapter behind <see cref="IProductCreatedSubscription"/>. Subscribes when constructed and
 /// leaves the consumer group when disposed, so the delivery protocol never sees a topic or a group id.
 /// </summary>
-internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedSubscription, IDisposable
+/// <remarks>
+/// Generic over the Avro value type because <c>Kafka:Consumer:EnableAvroReader</c> chooses between the
+/// generated record and <c>GenericRecord</c>, and everything below the deserializer — offsets, commits,
+/// rewinds, group membership — is identical either way. The deserializer and the mapping to
+/// <see cref="ProductCreatedEvent"/> are handed in rather than chosen here:
+/// <see cref="ProductCreatedSubscriptionFactory"/> owns that decision, so this class has no branch on a
+/// configuration flag and no reference to either Avro representation.
+/// </remarks>
+internal sealed class KafkaProductCreatedSubscription<TValue> : IKafkaProductCreatedSubscription
+    where TValue : class
 {
-    private readonly IConsumer<string, ProductCreatedAvro> _consumer;
+    private readonly IConsumer<string, TValue> _consumer;
+    private readonly Func<TValue, ProductCreatedEvent> _toEvent;
     private readonly int _retryDelayMs;
     private readonly ILogger _logger;
     private bool _disposed;
 
     public KafkaProductCreatedSubscription(
         KafkaConsumerOptions kafka,
-        ISchemaRegistryClient schemaRegistryClient,
+        IDeserializer<TValue> valueDeserializer,
+        Func<TValue, ProductCreatedEvent> toEvent,
         ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(kafka);
-        ArgumentNullException.ThrowIfNull(schemaRegistryClient);
+        ArgumentNullException.ThrowIfNull(valueDeserializer);
+        ArgumentNullException.ThrowIfNull(toEvent);
 
-        this._logger = logger;
+        _toEvent = toEvent;
+        _logger = logger;
         _retryDelayMs = kafka.Consumer.RetryDelayMs;
 
-        _consumer = new ConsumerBuilder<string, ProductCreatedAvro>(BuildConsumerConfig(kafka))
-            .SetValueDeserializer(
-                new AvroDeserializer<ProductCreatedAvro>(schemaRegistryClient, new AvroDeserializerConfig())
-                    .AsSyncOverAsync())
-            .SetErrorHandler((_, error) => LogConsumerError(logger, error.Reason))
+        _consumer = new ConsumerBuilder<string, TValue>(BuildConsumerConfig(kafka))
+            .SetValueDeserializer(valueDeserializer)
+            .SetErrorHandler((_, error) => KafkaSubscriptionLog.ConsumerError(logger, error.Reason))
             .Build();
 
         _consumer.Subscribe(kafka.Topics.ProductCreated);
-        LogSubscribed(logger, kafka.Topics.ProductCreated, kafka.Consumer.GroupId);
+        KafkaSubscriptionLog.Subscribed(
+            logger, kafka.Topics.ProductCreated, kafka.Consumer.GroupId, typeof(TValue).Name);
     }
 
     public ReceivedProductCreated? TryRead(CancellationToken cancellationToken)
     {
-        ConsumeResult<string, ProductCreatedAvro> result;
+        ConsumeResult<string, TValue> result;
 
         try
         {
@@ -54,7 +62,7 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         {
             // Reported here rather than raised: a failed read is not a failed delivery, and the protocol
             // answers a null by reading again.
-            LogConsumeFailed(_logger, exception);
+            KafkaSubscriptionLog.ConsumeFailed(_logger, exception);
             return null;
         }
 
@@ -64,7 +72,7 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         }
 
         return new ReceivedProductCreated(
-            ProductCreatedAvroMapper.ToEvent(result.Message.Value),
+            _toEvent(result.Message.Value),
             result,
             result.TopicPartitionOffset.ToString());
     }
@@ -101,8 +109,8 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         _disposed = true;
     }
 
-    private static ConsumeResult<string, ProductCreatedAvro> Position(ReceivedProductCreated received) =>
-        (ConsumeResult<string, ProductCreatedAvro>)received.Position;
+    private static ConsumeResult<string, TValue> Position(ReceivedProductCreated received) =>
+        (ConsumeResult<string, TValue>)received.Position;
 
     private static ConsumerConfig BuildConsumerConfig(KafkaConsumerOptions kafka) => new()
     {
@@ -113,18 +121,12 @@ internal sealed partial class KafkaProductCreatedSubscription : IProductCreatedS
         EnableAutoCommit = kafka.Consumer.EnableAutoCommit,
         SessionTimeoutMs = kafka.Consumer.SessionTimeoutMs,
         MaxPollIntervalMs = kafka.Consumer.MaxPollIntervalMs,
+        MaxPollRecords = kafka.Consumer.MaxPollRecords,
+        FetchMinBytes = kafka.Consumer.FetchMinBytes,
+        FetchWaitMaxMs = kafka.Consumer.FetchWaitMaxMs,
 
         // Not configurable on purpose: committing only after the handler succeeds requires the offset
         // store to stay manual. Exposing this key would let configuration silently break the contract.
         EnableAutoOffsetStore = false,
     };
-
-    [LoggerMessage(EventId = 3001, Level = LogLevel.Information, Message = "Subscribed to topic {Topic} as group {GroupId}.")]
-    private static partial void LogSubscribed(ILogger logger, string topic, string groupId);
-
-    [LoggerMessage(EventId = 3002, Level = LogLevel.Error, Message = "Failed to consume a ProductCreated message.")]
-    private static partial void LogConsumeFailed(ILogger logger, Exception exception);
-
-    [LoggerMessage(EventId = 3004, Level = LogLevel.Warning, Message = "Kafka consumer error: {Reason}")]
-    private static partial void LogConsumerError(ILogger logger, string reason);
 }

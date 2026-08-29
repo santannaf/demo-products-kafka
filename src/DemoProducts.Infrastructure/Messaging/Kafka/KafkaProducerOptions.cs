@@ -30,6 +30,34 @@ public sealed class KafkaProducerOptions
         public bool EnableIdempotence { get; set; } = true;
 
         public int MessageTimeoutMs { get; set; } = 30_000;
+
+        /// <summary>
+        /// librdkafka's <c>message.send.max.retries</c>: how many times a produce request is retried
+        /// before the delivery report reports failure.
+        /// </summary>
+        /// <remarks>
+        /// Bounded only because <see cref="EnableIdempotence"/> is on. Without idempotence a retry can
+        /// duplicate or reorder a message, and the safe retry count would be zero.
+        /// </remarks>
+        public int MaxRetries { get; set; } = 3;
+
+        /// <summary>
+        /// One of Confluent's <c>CompressionType</c> values: None, Gzip, Snappy, Lz4, Zstd.
+        /// </summary>
+        public string CompressionType { get; set; } = "Snappy";
+
+        /// <summary>
+        /// One of Confluent's <c>Partitioner</c> values: Random, Consistent, ConsistentRandom, Murmur2,
+        /// Murmur2Random.
+        /// </summary>
+        /// <remarks>
+        /// There is no librdkafka equivalent of the Java client's <c>UniformStickyPartitioner</c>, which
+        /// batches keyless messages onto one partition at a time. <c>ConsistentRandom</c> is the closest
+        /// available and is librdkafka's own default: keyed messages hash to a stable partition, keyless
+        /// ones go to a random one. It makes no difference to this application either way — every message
+        /// carries the product id as its key, so the keyed branch is the only one ever taken.
+        /// </remarks>
+        public string Partitioner { get; set; } = "ConsistentRandom";
     }
 
     public sealed class SchemaRegistrySettings
