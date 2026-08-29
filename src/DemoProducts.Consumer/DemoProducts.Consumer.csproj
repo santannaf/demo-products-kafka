@@ -5,12 +5,61 @@
     <RootNamespace>DemoProducts.Consumer</RootNamespace>
 
     <!--
-      No PublishAot here, deliberately. The Avro DESERIALIZE path (Avro.SpecificDefaultReader ->
-      Avro.ObjectCreator) resolves record types BY NAME through Activator, which ILC cannot analyse
-      statically. See docs/adr/0001-native-aot.md. IsAotCompatible still applies from
-      Directory.Build.props, so the source-level analysers keep running over this project.
+      No PublishAot here, deliberately: this host ships as a framework-dependent worker. The reason in
+      ADR 0001 was the Avro DESERIALIZE path (Avro.SpecificDefaultReader -> Avro.ObjectCreator), which
+      resolves record types BY NAME through Activator. That reason now applies only when
+      Kafka:Consumer:EnableAvroReader is true; the generic reader this sample ships by default does not
+      go through ObjectCreator. IsAotCompatible still applies from Directory.Build.props, so the
+      source-level analysers keep running over this project either way.
+
+      A native publish IS supported as an opt-in and has been verified end to end: publish this project
+      for linux-x64, self-contained, with PublishAot set to true. The README carries the full command.
+
+      The group below is what makes PublishAot the only flag that command needs. It applies ONLY when
+      PublishAot is on, so the default framework-dependent build is untouched.
     -->
   </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <!--
+      Same demotion as the Api, and for the same reason: TreatWarningsAsErrors propagates into ILC, which
+      reports 60 third-party diagnostics as errors. They come from Confluent.SchemaRegistry, Avro and
+      Newtonsoft.Json - the read path keeps Confluent's serde on purpose - and NONE from DemoProducts.*.
+      TrimmerSingleWarn=false is what makes them name their methods instead of collapsing into one
+      IL2104 per assembly.
+    -->
+    <IlcTreatWarningsAsErrors>false</IlcTreatWarningsAsErrors>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+  </PropertyGroup>
+
+  <!--
+    Same mechanism as the Api, and only relevant when PublishAot is on: ILC forwards $(NoWarn) into its
+    own nowarn argument. Without it the opt-in native publish prints 60 third-party diagnostics.
+
+    The list is wider than the Api's because this host keeps Confluent's Avro serde and Schema Registry
+    client on purpose, and those reach Newtonsoft.Json and Avro's reflective ObjectCreator. The origins
+    are Confluent.SchemaRegistry, Confluent.SchemaRegistry.Serdes, Avro, Newtonsoft.Json and
+    Confluent.Kafka. NONE come from DemoProducts.*, which is the number that actually matters.
+
+    The width is also why this is scoped to a target that runs before ILC and gated on PublishAot: it
+    must not reach the C# compiler, and it must not touch the ordinary framework-dependent build at all.
+
+        dotnet publish ... -p:PublishAot=true -p:ShowThirdPartyTrimWarnings=true
+
+    brings all 60 back. Read ADR 0001 before widening the list.
+  -->
+  <Target Name="SilenceThirdPartyIlcWarnings"
+          BeforeTargets="WriteIlcRspFileForCompilation"
+          Condition="'$(ShowThirdPartyTrimWarnings)' != 'true'">
+    <PropertyGroup>
+      <NoWarn>$(NoWarn);IL2026;IL2055;IL2057;IL2067;IL2072;IL2075;IL2091;IL3050</NoWarn>
+    </PropertyGroup>
+  </Target>
+
+  <!-- Inert unless this project is published with PublishAot=true; see the file for what it buys. -->
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DemoProducts.Application\DemoProducts.Application.csproj" />

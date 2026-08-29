@@ -1,0 +1,28 @@
+<!--
+  Only consulted when this project is published with PublishAot=true, which is NOT the default - ADR 0001
+  keeps the Consumer a framework-dependent worker. It exists so that the opt-in native publish produces a
+  binary that RUNS, rather than one that starts and fails on the first message.
+
+  The Consumer keeps Confluent's Schema Registry client (it needs schema-by-id resolution, which the
+  producing side does not), and that client binds its DTOs with Newtonsoft.Json, by reflection over
+  property names and constructors. Trimmed, the deserializer cannot even construct them:
+
+      Newtonsoft.Json.JsonSerializationException: Unable to find a constructor to use for type
+      Confluent.SchemaRegistry.Schema
+
+  Listed one by one rather than rooting the assembly: the OAuth bearer and Azure IMDS credential
+  providers in that package are never constructed here.
+-->
+<linker>
+  <assembly fullname="Confluent.SchemaRegistry">
+    <type fullname="Confluent.SchemaRegistry.Schema" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.RegisteredSchema" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.SchemaReference" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.ServerConfig" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.Metadata" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.RuleSet" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.Rule" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.RuleOverride" preserve="all" />
+    <type fullname="Confluent.SchemaRegistry.ErrorMessage" preserve="all" />
+  </assembly>
+</linker>
