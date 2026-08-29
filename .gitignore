@@ -6,3 +6,12 @@ publish/
 .idea/
 .DS_Store
 .opsx/
+
+# Byproducts of the produce smoke, whether run by hand from the README or by the CI job. They land in
+# the working directory because the two hosts write to stdout and the step redirects them; keeping them
+# untracked is what stops a local run from showing up as pending changes.
+api.log
+consumer.log
+publish-*.log
+baseline-*.log
+response.json
