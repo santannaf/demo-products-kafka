@@ -51,6 +51,12 @@
       7.2.2 is the last Apache-2.0 release.
     -->
     <PackageVersion Include="FluentAssertions" Version="7.2.2" />
+    <!--
+      Only the integration tier references it. It pulls in Testcontainers core, which reaches the Docker
+      daemon through reflection-based JSON - harmless here because test projects are excluded from the
+      AOT and trimming rules by Directory.Build.props.
+    -->
+    <PackageVersion Include="Testcontainers.Kafka" Version="4.14.0" />
   </ItemGroup>
 
 </Project>

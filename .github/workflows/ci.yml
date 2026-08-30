@@ -39,6 +39,13 @@ jobs:
       # global.json selects the Microsoft.Testing.Platform runner and the test project opts into the
       # matching entry point. With only one of the two, this command reports "Zero tests ran" and exits
       # non-zero, so a regression there fails here rather than passing quietly.
+      #
+      # This also runs DemoProducts.IntegrationTests, which starts cp-kafka and cp-schema-registry through
+      # Testcontainers against the runner's own daemon - hence the extra minute or so, and hence no
+      # `docker compose up` step here: the fixture owns those containers and gives them Docker-assigned
+      # ports, so it does not collide with the compose topology the native job publishes on 9092/18081.
+      # There is deliberately no environment-variable gate on that tier: a suite that skips by default is
+      # a suite nobody notices has stopped running, and a green job would then prove less than it looks.
       - name: Test
         run: dotnet test --solution DemoProducts.slnx --no-build -c Release
 

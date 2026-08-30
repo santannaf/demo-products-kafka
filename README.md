@@ -22,6 +22,10 @@ src/DemoProducts.Api              Minimal API, POST /products. Native AOT.
 src/DemoProducts.Consumer         Worker host. Program.cs and nothing else.
 tests/DemoProducts.UnitTests      xUnit v3. Domain rules, options validators, the Avro round-trip,
                                   and the delivery protocol against a fake subscription.
+tests/DemoProducts.IntegrationTests
+                                  xUnit v3 + Testcontainers. Both adapters against a real broker and a
+                                  real Schema Registry: the schema id on the wire, both Avro readers,
+                                  and the offset semantics a fake cannot answer for.
 ```
 
 `CONTEXT.md` carries the domain glossary — what a Product, a ProductCreated event, a subscription seam
@@ -112,10 +116,18 @@ on the `dotnet test` side (`"test": { "runner": "Microsoft.Testing.Platform" }`)
 `<UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>` in the test csproj picks the
 matching entry point on the test app's side. With only the first, the executable keeps xUnit's own console
 runner, rejects the arguments `dotnet test` hands it, and the command reports **"Zero tests ran"** with no
-hint that 41 tests exist — while running the executable directly still passes. If `dotnet test` ever prints
+hint that 80 tests exist — while running the executable directly still passes. If `dotnet test` ever prints
 `total: 0`, check that property before believing the suite is empty.
 
-No broker, no container, no Docker: the suite is hermetic and runs in about a second.
+**`dotnet test` needs a Docker daemon.** The unit project is hermetic and finishes in about a second;
+the integration project starts `cp-kafka` and `cp-schema-registry` through Testcontainers, which is
+roughly twenty seconds warm and the length of an image pull cold. There is no environment-variable gate:
+a suite that is skipped by default is a suite nobody notices has stopped running.
+
+Both containers get Docker-assigned host ports, so the integration suite runs happily while the
+`docker compose` topology below is already holding 9092 and 18081. Each test creates a topic of its own,
+which is what a state reset looks like in Kafka: it also gives the test a Schema Registry subject nothing
+else touches, and a consumer group nothing else has committed against.
 
 What is covered, and why each earns its place:
 
@@ -127,6 +139,31 @@ What is covered, and why each earns its place:
 - **`AtLeastOnceDelivery`** — the offset protocol, against a fake subscription: a handled message is
   committed, a failed one is never committed, is rewound, and is paused over *after* the rewind. Deleting
   the `SeekBack` call turns three of these red; before the seam existed it turned nothing red.
+
+And what only a broker can answer for, in `tests/DemoProducts.IntegrationTests`:
+
+- **The schema id is the registry's, not the encoder's idea of one.** The unit tier proves the frame's
+  shape with an id the test invented. Here the id in the frame is compared to the one the registry
+  actually assigned, and the message is handed to Confluent's `AvroDeserializer` — which fetches the
+  writer schema *by that id* rather than being given it. That resolution is the seam between the
+  hand-written encoder on the Api side and the Confluent serde on the Consumer side, and nothing below
+  the broker exercises it.
+- **Both `EnableAvroReader` branches**, asserted to produce the same event, with the `Subscribed` log line
+  pinning which reader was chosen — without that guard both rows of the theory could take the same branch
+  and stay green.
+- **The offset semantics.** A committed offset is not redelivered to the next subscription; `SeekBack`
+  delivers the same record again; and — the negative that gives the previous one its meaning — *not*
+  committing is not enough on its own, because the read position has already moved past the record.
+  Deleting the `SeekBack` call in `AtLeastOnceDelivery` turns both delivery tests here red as well.
+- **The drop at the attempt cap**, including the `EventId 3006` line, which with no dead-letter topic is
+  the record's only remaining trace and is therefore contract rather than incidental output.
+- **`AutoRegisterSchemas`** in both positions: off with nothing published fails as
+  `EventPublishFailedException`, off with the schema already there resolves the same id without creating a
+  second version. An unreachable registry surfaces as the same exception, wrapping `HttpRequestException`.
+- **One round trip end to end** through the producer, the broker, the subscription, the protocol and the
+  application's handler — the failure the per-side tests cannot have, where two halves each satisfy their
+  own test and disagree with each other. It is also where events 2002 and 1001 are asserted to carry the
+  same `DomainEventId`, which is the entire reason both lines have that placeholder.
 
 ## Build
 
@@ -144,7 +181,7 @@ project, so this build **is** the source-level trim/AOT analyser gate. It curren
 
 | Job | What it protects | Why it is not enough on its own |
 | --- | --- | --- |
-| **Build and test** | source-level trim/AOT analysers over `src/**`, warnings as errors, plus the 64 tests | the analysers are per-assembly; a dependency's annotations are only checked at publish |
+| **Build and test** | source-level trim/AOT analysers over `src/**`, warnings as errors, plus the 80 tests | the analysers are per-assembly; a dependency's annotations are only checked at publish |
 | **Native publish + warning baseline** | that both binaries publish, silently, and that the suppressed diagnostics have not moved from **4** (Api) and **60** (Consumer), nor grown to include `DemoProducts.*` | a clean publish says the code is analysable, not that the binary runs |
 | **Produce smoke** | a real `POST /products` on the **native** binaries against a real broker and Schema Registry, asserting `201` and the matching `ProductCreated consumed` line | — |
 
@@ -417,10 +454,19 @@ mapper pins `DateTimeKind.Utc` in both directions.
 
 ## Known limitations
 
-- **The unit suite stops at the seams.** `tests/DemoProducts.UnitTests` covers the domain rules, both
-  options validators, the Avro round-trip and the delivery protocol, but nothing exercises a real broker:
-  `KafkaProductCreatedSubscription` and `KafkaProductCreatedProducer` — the two adapters — have no
-  integration test. Testcontainers against Kafka plus Schema Registry is the next layer.
+- **No tier proves the native binaries.** Every test in both projects runs on the CLR with reflection
+  intact, so a green suite says the protocol and the wire format are right — not that a trimmed binary can
+  execute them. That remains the job of the source-level analyser gate and the produce smoke on the
+  published binaries, and the integration suite does not replace either.
+- **The integration suite stops below the hosts.** It drives the two adapters directly, so
+  `ProductCreatedListener`, `CreateProductUseCase` and the `POST /products` endpoint are still only
+  covered by the CI produce smoke. What the listener adds over the adapters is a `BackgroundService` and a
+  DI scope per message; what the endpoint adds is a status code. Both were judged cheaper to leave to the
+  smoke than to buy a `WebApplicationFactory` for.
+- **An absence is asserted over a window, not proven.** The round-trip test concludes the offset was
+  committed from nothing arriving in two seconds. The positive case arrives in milliseconds, so the
+  window is generous — but it is evidence, not a proof, and on a badly overloaded machine it is the first
+  assertion here that would go flaky.
 - **`CreateProductUseCase` is untested.** Three lines of orchestration whose only interesting behaviour —
   that the response is not returned until the broker acknowledges — would be asserted through a mock of
   the port it already depends on. Judged not worth the test.

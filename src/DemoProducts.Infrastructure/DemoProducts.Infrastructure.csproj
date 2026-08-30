@@ -41,6 +41,7 @@
   <!-- The delivery protocol and the options validator are internal; their tests are their interface. -->
   <ItemGroup>
     <InternalsVisibleTo Include="DemoProducts.UnitTests" />
+    <InternalsVisibleTo Include="DemoProducts.IntegrationTests" />
   </ItemGroup>
 
 </Project>

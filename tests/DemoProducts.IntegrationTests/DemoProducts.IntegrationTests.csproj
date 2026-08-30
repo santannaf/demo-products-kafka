@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- xUnit v3 test projects run as executables; see DemoProducts.UnitTests.csproj for why the
+         Microsoft.Testing.Platform entry point has to be opted into explicitly. -->
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <RootNamespace>DemoProducts.IntegrationTests</RootNamespace>
+    <Nullable>enable</Nullable>
+    <!--
+      NOTE: JsonSerializerIsReflectionEnabledByDefault is deliberately NOT set to false here, even though
+      the Api's published binary sets it. The switch is process-wide, and Testcontainers talks to the
+      Docker daemon through reflection-based JSON, so turning it off would break the fixture rather than
+      the code under test. Nothing in this project attests Native AOT compatibility - see KafkaFixture.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DemoProducts.Domain\DemoProducts.Domain.csproj" />
+    <ProjectReference Include="..\..\src\DemoProducts.Application\DemoProducts.Application.csproj" />
+    <ProjectReference Include="..\..\src\DemoProducts.Infrastructure\DemoProducts.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Testcontainers.Kafka" />
+  </ItemGroup>
+
+</Project>
